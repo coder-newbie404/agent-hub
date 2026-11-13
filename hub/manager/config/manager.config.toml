@@ -1,0 +1,25 @@
+# Manager component-only settings (safe to commit).
+# Secrets and deployment-critical values live in env (.env), never here.
+# The root compose.yml mounts this directory read-only at /srv/config, so the
+# default path (config/manager.config.toml under the container WORKDIR /srv)
+# resolves here: edit this file, then `docker compose restart manager`.
+# MANAGER_CONFIG can override the path; env vars still win over the file.
+
+# Agent tokens expire after this many days; /agent token rotate mints a
+# replacement. 0 or negative is rejected by the token service; set null in
+# code paths that explicitly want a never-expiring token (bootstrap).
+token_ttl_days = 30
+
+# Offline sweep cadence: sweep runs every heartbeat_interval seconds and
+# marks agents offline after offline_after silent seconds.
+heartbeat_interval = 30
+offline_after = 180
+
+# Delegation broker (agent→agent prompts over /ws/agent): how long a
+# requester waits for the worker's result before the round fails,
+# bookkeeping ages for delegated sessions (idle/archive), and how many
+# hops a delegated prompt may take before it is refused as a loop.
+delegation_result_timeout_s = 600.0
+delegation_idle_after_s = 21600
+delegation_archive_after_s = 1209600
+delegation_max_hop = 3

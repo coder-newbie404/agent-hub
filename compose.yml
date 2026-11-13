@@ -1,0 +1,63 @@
+# agent-hub quickstart: one root .env, optional profiles for extras.
+#   manager  the hub (REST + agent/UI WebSockets)   [default, always on]
+#   caddy    TLS termination for VPS deploys        [--profile caddy]
+#   discord  Discord bot frontend                   [--profile discord]
+# Localhost: docker compose up -d                 -> hub on 127.0.0.1:8000
+# VPS:       set DOMAIN=<host> in .env, then docker compose --profile caddy up -d
+#            (keep it in .env: an inline `DOMAIN=... docker compose` is not
+#            remembered, and the next compose command reverts to localhost)
+# Images build locally; no registry needed.
+
+name: agent-hub
+
+services:
+  manager:
+    build: hub/manager
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?set ADMIN_TOKEN in .env (cp .env.example .env)}
+      SQLITE_PATH: ${SQLITE_PATH:-/data/manager.db}
+    volumes:
+      - manager-data:/data
+      - ./hub/manager/config:/srv/config:ro
+    networks: [hub]
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    profiles: [caddy]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      - ./hub/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [hub]
+    depends_on: [manager]
+    restart: unless-stopped
+
+  discord:
+    build: frontend/discord
+    profiles: [discord]
+    environment:
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+      DISCORD_OWNER_ID: ${DISCORD_OWNER_ID:-0}
+      DISCORD_GUILD_ID: ${DISCORD_GUILD_ID:-}
+      DISCORD_SYNC_CHANNEL_ID: ${DISCORD_SYNC_CHANNEL_ID:-}
+      HUB_TOKEN: ${ADMIN_TOKEN:?set ADMIN_TOKEN in .env}
+      HUB_URL: ${HUB_URL:-http://manager:8000}
+    networks: [hub]
+    depends_on: [manager]
+    restart: unless-stopped
+
+volumes:
+  manager-data:
+  caddy-data:
+  caddy-config:
+
+networks:
+  hub:

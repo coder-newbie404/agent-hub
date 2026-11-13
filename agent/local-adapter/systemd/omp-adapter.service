@@ -1,0 +1,17 @@
+[Unit]
+Description=agent-hub local adapter (outbound to the hub)
+After=network-online.target
+
+[Service]
+Type=simple
+# Edit all three /opt/agent-hub paths (WorkingDirectory, EnvironmentFile, ExecStart) to wherever you cloned agent-hub:
+WorkingDirectory=/opt/agent-hub/agent/local-adapter
+EnvironmentFile=/opt/agent-hub/agent/local-adapter/.env
+# No console script is packaged (no pyproject.toml), so run the module
+# directly with the project venv interpreter:
+ExecStart=/opt/agent-hub/agent/local-adapter/.venv/bin/python -m omp_adapter
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

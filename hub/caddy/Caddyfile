@@ -1,0 +1,12 @@
+# TLS termination for the hub. DOMAIN (from the root .env) decides the
+# certificate issuer:
+#   DNS name             -> automatic Let's Encrypt (renewal native to Caddy)
+#   bare IP / localhost  -> Caddy's internal CA (self-signed; clients must
+#                           trust it or skip verification, docs/DEPLOY.md)
+{
+	admin off
+}
+https://{$DOMAIN} {
+	reverse_proxy /ws/agent manager:8000
+	reverse_proxy manager:8000
+}
