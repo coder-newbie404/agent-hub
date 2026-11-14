@@ -37,7 +37,10 @@ Variables are split by secret-ness:
   `.env` file in this directory; env names matched case-insensitively):
   important + secret values and everything that differs per instance.
 - **config file** (`config/adapter.config.toml`, committed): component
-  tuning only. `ADAPTER_CONFIG` overrides the path.
+  tuning only. `ADAPTER_CONFIG` overrides the path; it is read from the
+  **process environment only** (shell export, systemd `Environment=` or
+  `EnvironmentFile`), never from a `.env` file, so putting it in `.env` has
+  no effect.
 
 Precedence, highest first: real process environment (shell exports, systemd
 `EnvironmentFile`), then the config file, then the `.env` file, then the code
@@ -53,7 +56,7 @@ why the committed file sets only pure tuning keys and nothing per-instance.
 | `RUNTIME_BIN` | no | Binary to run. Default: the runtime name on `PATH`. Set an absolute path under systemd (its `PATH` usually lacks `~/.local/bin`). |
 | `POLICY` | no | `default` (default), `readonly`, `edits`, `full`; must be supported by the runtime (table above). |
 | `MODEL` | no | Model to use; unset = the runtime's own default. opencode wants `provider/model`. |
-| `RUNTIME_ARGS` | no | JSON list of extra argv for the runtime, inserted before the prompt, e.g. `["--some-flag"]`. |
+| `RUNTIME_ARGS` | no | JSON list of extra argv for the runtime, e.g. `["--some-flag"]`. The full command is `<bin> <fixed flags> <policy flags> <model flag> <RUNTIME_ARGS> -- <message>` (omp: `... <RUNTIME_ARGS> -p -- <message>`), so they land before the `--` and the message. |
 | `AGENT_ID` | no | Identity registered with the hub. Default `<runtime>-local`. Unique per instance. |
 | `AGENT_NAME` | no | Display name. Default `<runtime> local`. |
 | `ENV_PASSTHROUGH` | no | JSON list of extra environment variable *name patterns* (fnmatch) the agent process may see; see "Environment the agent sees". |
@@ -95,20 +98,50 @@ mkdir -p ~/.config/systemd/user ~/.config/agent-adapter
 cp systemd/agent-adapter@.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 
-# one instance per runtime
-cp .env.example ~/.config/agent-adapter/omp.env      # RUNTIME=omp
-cp .env.example ~/.config/agent-adapter/claude.env   # RUNTIME=claude, AGENT_ID=claude-local
-chmod 600 ~/.config/agent-adapter/*.env
-$EDITOR ~/.config/agent-adapter/claude.env
+# one env file per instance, from the template
+cp .env.example ~/.config/agent-adapter/omp.env
+cp .env.example ~/.config/agent-adapter/claude.env
+chmod 600 ~/.config/agent-adapter/*.env    # they hold AGENT_TOKEN
+```
 
+The copies are only templates: **edit each file before starting its
+instance.** Every instance needs its own `AGENT_TOKEN` (minted for that
+instance's `AGENT_ID`: a token is pinned to one agent id) and its own
+`AGENT_ID`; the rest is per instance too. For example:
+
+```bash
+# ~/.config/agent-adapter/omp.env        (first instance)
+MANAGER_URL=wss://<your-host>/ws/agent
+AGENT_TOKEN=<token minted for omp-local>
+DEFAULT_WORKSPACE=/home/me/work
+RUNTIME=omp
+AGENT_ID=omp-local
+RUNTIME_BIN=/home/me/.local/bin/omp
+
+# ~/.config/agent-adapter/claude.env     (second instance)
+MANAGER_URL=wss://<your-host>/ws/agent
+AGENT_TOKEN=<a different token, minted for claude-local>
+DEFAULT_WORKSPACE=/home/me/work
+RUNTIME=claude
+AGENT_ID=claude-local
+RUNTIME_BIN=/home/me/.local/bin/claude
+```
+
+Then start them:
+
+```bash
 systemctl --user enable --now agent-adapter@omp
 systemctl --user enable --now agent-adapter@claude
 loginctl enable-linger $USER   # keep them running after logout
 ```
 
-Each env file needs its own `AGENT_ID` and an `AGENT_TOKEN` minted for that id
-(a token is pinned to one agent id). Data lives apart per instance under
-`~/.agent-adapter/<AGENT_ID>/`.
+Data lives apart per instance under `~/.agent-adapter/<AGENT_ID>/`.
+
+Invalid configuration (unknown runtime, a policy the runtime cannot enforce, a
+missing required setting) makes the adapter exit non-zero with a message
+instead of retrying, so `systemctl --user status agent-adapter@<instance>`
+shows `failed` and `journalctl --user -u agent-adapter@<instance>` names the
+problem.
 
 The unit's `WorkingDirectory` and `ExecStart` point at
 `/opt/agent-hub/agent/local-adapter`: edit both if your checkout lives
@@ -158,6 +191,13 @@ another variable (for example `GOOGLE_CLOUD_PROJECT`), add it:
   directories on this machine.
 - `POLICY=full` removes the runtime's permission prompts. Use it only on hosts
   where the agent is sandboxed (container, VM, throwaway user).
+- The message text is always passed after `--`, as the last argument, so a hub
+  message can never be parsed as a CLI option (for example one starting with
+  `--approval-mode=yolo` or `--dangerously-skip-permissions`). `omp`'s and
+  `opencode`'s `--` handling was checked on the real binaries (without a model
+  call); Claude's is derived from its docs and POSIX semantics and is
+  unverified. Note `omp` treats a message starting with `@` as a file-attach
+  reference, and `--` does not change that.
 - Claude Code runs the project's own hooks (`.claude/settings*.json`) in
   headless mode without prompting: a repository you point it at can execute
   commands. Only point a `claude` instance at workspaces you trust.

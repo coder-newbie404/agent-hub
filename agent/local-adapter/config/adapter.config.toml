@@ -1,7 +1,7 @@
 # Adapter component-only tuning (safe to commit).
 # Secrets and per-instance values (RUNTIME, AGENT_ID, MODEL, POLICY, tokens)
 # live in env (.env or the systemd EnvironmentFile), never here.
-# ADAPTER_CONFIG overrides this path.
+# ADAPTER_CONFIG overrides this path (process environment only, not `.env`).
 #
 # Precedence, highest first: process environment > this file > `.env` > code
 # defaults. A key set here therefore beats the same key in `.env`: keep

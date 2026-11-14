@@ -157,7 +157,10 @@ and reuse `JsonlProcessRunner`. Use `runtimes/omp.py` as the reference.
 - `argv(binary, req) -> list[str]`: the command for one turn. `req` is a
   `RunRequest(workspace, resume_id, text, policy, model, env)`; add the
   resume flag when `resume_id` is set, the policy flags, `--model` when
-  `model` is set, and the operator's `settings.runtime_args`.
+  `model` is set, and the operator's `settings.runtime_args`, in that order,
+  then end option parsing with `--` and pass `req.text` last: the text is a
+  hub message and must never be parseable as a flag (check that your CLI
+  honors `--` against the real binary).
 - `parser() -> Parser`: a fresh parser per run.
 
 **Parser**: `feed(obj: dict) -> Parsed` is called once per decoded JSON line
