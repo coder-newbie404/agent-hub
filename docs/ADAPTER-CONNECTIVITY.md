@@ -9,7 +9,7 @@ stack, and the security model.
 
 ### Current design: no inbound port needed
 
-The adapter (`omp-adapter`) is an **outbound-only** WebSocket client. It dials
+The adapter (`agent_adapter`) is an **outbound-only** WebSocket client. It dials
 the hub at `wss://<your-host>/ws/agent`, authenticates with
 `AGENT_TOKEN`, and everything the hub wants to send (runs, cancels, sync
 nudges) is delivered down that already-established connection.
@@ -18,12 +18,12 @@ nudges) is delivered down that already-established connection.
 flowchart LR
     HUB[Hub on your host\n:443 Caddy TLS] -- "inbound from anywhere" --> C[Caddy]
     C --> M[manager :8000]
-    A[omp-adapter\nlocal machine] -- "outbound wss://, initiated FROM home" --> C
+    A[agent adapter\nlocal machine] -- "outbound wss://, initiated FROM home" --> C
 ```
 
 Implications:
 
-- The local machine **never listens on a port** — `omp-adapter` is a dialer,
+- The local machine **never listens on a port** — the adapter is a dialer,
   not a server.
 - It works from behind NAT, CGNAT (typical home ISP), and firewalls that only
   allow outbound 443.
@@ -71,8 +71,8 @@ must dial the local machine directly, and prefer tunnels over port-forwarding.
 | Admin-only REST | `hub/manager` (`routes.py`) | `require_admin` on `/tokens*`, `PATCH`/`DELETE /sessions/{id}`, `messages/mark-posted`, `messages/count`, `/sessions/missed`, `/sessions/recover-interrupted`, `/sync/nudge`; constant-time, non-ASCII-safe (regression-tested) |
 | TLS | `hub/caddy/Caddyfile` | Caddy-issued cert: Let's Encrypt for a DNS `DOMAIN`, internal CA (self-signed) for bare IP/localhost — docs/DEPLOY.md |
 | Discord authorization | `frontend/discord` | All `/session`, `/run`, `/agent` commands owner-gated by `DISCORD_OWNER_ID` |
-| Workspace sandbox | adapter | `ALLOWED_ROOT` confines any workspace path passed to `omp` |
-| Process hygiene | adapter | `preexec_fn` sets `pdeathsig` so a killed adapter cannot orphan running `omp` processes |
+| Workspace sandbox | adapter | `ALLOWED_ROOT` confines any workspace path passed to the agent runtime |
+| Process hygiene | adapter | `preexec_fn` sets `pdeathsig` so a killed adapter cannot orphan running agent-runtime processes |
 | Env hygiene | repo | `.env` files gitignored; no secrets in committed config files |
 
 ### Remaining gaps, ranked
@@ -81,7 +81,7 @@ must dial the local machine directly, and prefer tunnels over port-forwarding.
    uvicorn's 64 MiB `ws-max-size` (needed for full agent frames) is a
    memory-amplification surface — unauthenticated sockets are rejected
    pre-accept, but authenticated ones can still be large.
-2. **Plaintext at rest.** Journal (`~/.omp-adapter/journal/`) and
+2. **Plaintext at rest.** Journal (`~/.agent-adapter/<agent_id>/journal/`) and
    `manager.db` hold full transcripts unencrypted. Acceptable for a
    single-user deployment; disk encryption if the laptop travels.
 3. **Bare-IP deployments use Caddy's internal CA** — adapter hosts must trust the CA root (docs/DEPLOY.md). A DNS-named hub avoids this entirely with standard Let's Encrypt.

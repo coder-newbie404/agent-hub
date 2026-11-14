@@ -1,8 +1,9 @@
 # agent-hub — Architecture & Tech Stack
 
-Discord becomes the UI for locally-owned omp coding sessions. One hub
+Discord becomes the UI for locally-owned coding-agent sessions. One hub
 routes Discord traffic to an outbound-only adapter daemon running next to
-the local `omp` binary. The local journal is the source of truth; the hub DB
+a local agent runtime (`omp`, `claude` or `opencode`; one adapter instance
+per runtime). The local journal is the source of truth; the hub DB
 is a projection kept in step by a continuous two-way sync.
 
 ```mermaid
@@ -10,7 +11,7 @@ flowchart LR
     U[Discord owner] -- slash commands / threads --> D[discord frontend\nfrontend/discord]
     D -- REST + /ws/ui events --> HUB[FastAPI manager\nyour-host :443]
     HUB -- sync.push / agent.message\noutbound-only WSS --> A[local-adapter\ndaemon, local machine]
-    A -- spawn / cancel --> O[omp --mode=json]
+    A -- spawn / cancel --> O[agent runtime CLI\nomp / claude / opencode]
     A <-- journal tail --> J[(journal.jsonl\nlocal source of truth)]
     HUB --> DB[(SQLite manager.db\nprojection + transcripts)]
     HUB --- C[Caddy TLS :443] --- A
@@ -23,8 +24,8 @@ flowchart LR
 | `hub/manager` | container (`manager`) | Hub REST API (`/health`, `/agents`, `/sessions*`, `/tokens*`, `/sync/nudge`), UI event channel at `/ws/ui`, agent WebSocket at `/ws/agent`, sync coordinator, session projection |
 | `hub/caddy/` | container (`caddy`) | TLS on :443, reverse-proxies everything (incl. `/ws/agent`) to manager:8000 |
 | `frontend/discord` | container (`discord`) | Discord frontend: slash commands, thread↔session mapping, run cards, missed-message rendering. Consumes hub REST + `/ws/ui`; owns no DB |
-| `agent/local-adapter/agent_adapter` | local machine, systemd user unit | Registers as agent `omp-local`, spawns/cancels `omp` runs, owns the append-only journal, runs the sync loop. Never listens on a port |
-| `omp` | local machine | The agent runtime (`--mode=json` event stream; per-line size aligned with uvicorn's 64 MiB `--ws-max-size`) |
+| `agent/local-adapter/agent_adapter` | local machine, systemd user unit (one instance per runtime, `agent-adapter@<instance>`) | Registers as agent `<runtime>-local` (or `AGENT_ID`), spawns/cancels agent-runtime runs through a runtime driver, owns the append-only journal, runs the sync loop. Never listens on a port |
+| agent runtime (`omp`, `claude`, `opencode`) | local machine | The coding agent the adapter drives (`omp --mode=json` and the others each emit a JSON event stream; per-line size aligned with uvicorn's 64 MiB `--ws-max-size`) |
 
 ## Tech stack
 
@@ -40,7 +41,7 @@ pytest + pytest-asyncio.
 
 **Adapter** — Python 3.12, `websockets` outbound client with exponential
 backoff (cap `RECONNECT_MAX`), pydantic-settings, `asyncio` subprocess driving
-`omp` (preexec pdeathsig so a dead adapter can't orphan runs), fsync-per-line
+the runtime CLI (preexec pdeathsig so a dead adapter can't orphan runs), fsync-per-line
 JSONL journal, pytest.
 
 **Infra** — Docker Compose (root `compose.yml`: manager default, `caddy`/`discord`
@@ -73,8 +74,17 @@ Three ids, one convention: **the adapter's local id is the join key.**
 - Adapter/journal-created sessions: local id is the key; the hub stores it in
   `sessions.omp_session_id` (`new_id("sess")` for the row id). Both address
   styles resolve to one row (`id == local_id OR omp_session_id == local_id`).
-- `omp`'s own session UUID is stored in the journal (`omp` field) for
-  `--resume`; it is never a session key on either side.
+- The runtime's own session id (omp's UUID, claude's `session_id`, opencode's
+  `sessionID`) is stored in the journal (`omp` field) for resuming; it is
+  never a session key on either side. `omp_session_id` and the journal field
+  `omp` are legacy names, kept so the wire protocol, the hub column and old
+  journals stay compatible: they hold the runtime-native session id whatever
+  the runtime. The journal also records which runtime owns each session in
+  an `rt` field (a missing `rt` means `omp`, matching journals written
+  before multi-runtime support). The adapter resumes a session only under
+  the runtime that created it; a session whose `rt` differs from the running
+  instance's runtime starts fresh and logs a warning, so one runtime's id is
+  never handed to another.
 
 ## The feature: continuous two-way sync
 
@@ -98,7 +108,7 @@ ordering tracks local activity, not import time.
 (`omp_session_id IS NOT NULL`) with message counts. Local count < catalog
 count → `sync.need` → hub serves messages in batches → `merge_hub_messages`
 journals them (request_id dedupe) and folds a `hub_cursor`. Result: the
-journal mirrors every hub transcript, so local omp can resume any conversation.
+journal mirrors every hub transcript, so the local runtime can resume any conversation.
 
 **Ghost-session protection (added 2026-09-19).** Rows the adapter has not
 confirmed (NULL `omp_session_id` — e.g. a `/session new` fired while the
@@ -127,7 +137,7 @@ oversight sees everything.
 ## Status vocabulary
 
 Adapter speaks `idle/running/failed`; the hub normalizes via `_hub_status`:
-`idle + omp id → completed`, `idle without → waiting`, everything in hub
+`idle + runtime-native id (omp_session_id) → completed`, `idle without → waiting`, everything in hub
 vocabulary passes through. `idle` is never stored on the hub.
 
 ## Failure modes

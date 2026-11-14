@@ -142,6 +142,33 @@ docker compose --profile discord up -d
 is the one you generated in "create `.env` once".
 Verify with `/agent status` in Discord.
 
+## 5. Adapter instances
+
+Each machine runs one adapter instance per agent runtime (`omp`, `claude`,
+`opencode`), each its own hub agent. Mint one token per instance
+(`/agent token new <agent_id>` or `POST /tokens`), because a token is pinned
+to one `agent_id`. Then install the systemd template unit
+(`agent/local-adapter/systemd/agent-adapter@.service`; edit the two
+`/opt/agent-hub` paths first) and give every instance an env file:
+
+```bash
+mkdir -p ~/.config/systemd/user ~/.config/agent-adapter
+cp agent/local-adapter/systemd/agent-adapter@.service ~/.config/systemd/user/
+cp agent/local-adapter/.env.example ~/.config/agent-adapter/opencode.env
+chmod 600 ~/.config/agent-adapter/opencode.env
+# set MANAGER_URL, AGENT_TOKEN (minted for AGENT_ID), DEFAULT_WORKSPACE,
+# RUNTIME=opencode, AGENT_ID=opencode-local, RUNTIME_BIN=<absolute path>,
+# MODEL=<provider/model>, and ideally ALLOWED_ROOT
+systemctl --user daemon-reload
+systemctl --user enable --now agent-adapter@opencode
+loginctl enable-linger $USER
+```
+
+Verify with `/agent status` in Discord or `GET /agents`: `<agent_id>` lists
+online. Runtimes, policies and settings are documented in
+`agent/local-adapter/README.md`; upgrading an old `omp-adapter` install is
+described in its "Migrating from omp-adapter" section.
+
 ## Operations
 
 ```bash
@@ -235,6 +262,12 @@ DB; the adapter's journal lives on its own machine).
   means the MESSAGE CONTENT INTENT is not enabled for the bot, see "4.
   Discord frontend". `DISCORD_BOT_TOKEN is required` means it is blank in
   `.env`.
+- **Adapter exits at start with `unknown runtime`, `supports policies ...`
+  or `found legacy adapter data`**: `RUNTIME` is not one of the built-in
+  runtimes, `POLICY` is not enforceable by that runtime, or the data
+  directory of the old omp-only adapter still has to be moved. The message
+  names the fix; the last case is covered in the adapter README's
+  "Migrating from omp-adapter" section.
 - **Adapter or agent lost the hub** (hub restart, network drop): nothing to
   do. `agent/local-adapter` retries on its own with exponential backoff
   that doubles from 1 s up to its `reconnect_max` setting (default 30 s,

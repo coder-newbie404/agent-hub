@@ -4,11 +4,10 @@ After=network-online.target
 
 [Service]
 Type=simple
-# Edit all three /opt/agent-hub paths (WorkingDirectory, EnvironmentFile, ExecStart) to wherever you cloned agent-hub:
+# Edit the two /opt/agent-hub paths to wherever you cloned agent-hub.
 WorkingDirectory=/opt/agent-hub/agent/local-adapter
-EnvironmentFile=/opt/agent-hub/agent/local-adapter/.env
-# No console script is packaged (no pyproject.toml), so run the module
-# directly with the project venv interpreter:
+# One env file per instance: ~/.config/agent-adapter/<instance>.env
+EnvironmentFile=%h/.config/agent-adapter/%i.env
 ExecStart=/opt/agent-hub/agent/local-adapter/.venv/bin/python -m agent_adapter
 Restart=on-failure
 RestartSec=5

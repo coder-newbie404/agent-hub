@@ -17,13 +17,13 @@ flowchart LR
 
 ## Quickstart (localhost, ~5 minutes)
 
-Prereqs: Docker, Python 3.12, and something for the adapter to drive. The
+Prereqs: Docker, Python 3.12, and an agent CLI for the adapter to drive
+(`omp`, `opencode` or `claude`; see "Runtimes"). The
 local adapter is POSIX-only (Linux, macOS, or WSL on Windows): it spawns
 its runtime in a new process group via `preexec_fn` / `os.killpg`, and the
-docs assume `.venv/bin` paths. It needs an `omp` binary on `PATH`, or
-`OMP_BIN` (in the adapter's `.env`) pointing at any CLI that accepts the same invocation
-(`<bin> --mode=json --cwd <dir> [-r <id>] -p <text>`, see
-`agent/local-adapter/agent_adapter/omp.py`).
+docs assume `.venv/bin` paths. The quickstart uses `omp` on `PATH`; set
+`RUNTIME_BIN` (in the adapter's `.env`) to an absolute path if the binary
+is elsewhere.
 
 1. Start the hub:
 
@@ -45,7 +45,8 @@ docs assume `.venv/bin` paths. It needs an `omp` binary on `PATH`, or
    ```bash
    cd agent/local-adapter
    python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-   cp .env.example .env        # MANAGER_URL=ws://127.0.0.1:8000/ws/agent
+   cp .env.example .env        # RUNTIME=omp  (omp | claude | opencode)
+                               # MANAGER_URL=ws://127.0.0.1:8000/ws/agent
                                # AGENT_TOKEN=<ADMIN_TOKEN value for now; print it with:
                                #   grep '^ADMIN_TOKEN=' ../../.env | cut -d= -f2>
                                # DEFAULT_WORKSPACE=<dir the agent may use>
@@ -60,8 +61,24 @@ docs assume `.venv/bin` paths. It needs an `omp` binary on `PATH`, or
    curl -s -H "Authorization: Bearer $ADMIN_TOKEN" http://127.0.0.1:8000/agents
    ```
 
-   `omp-local` should list as online. Add the Discord frontend
+   `omp-local` (the default `<runtime>-local` id) should list as online. Add the Discord frontend
    (`--profile discord`) when you want threads as the UI — docs/DEPLOY.md.
+
+## Runtimes
+
+One adapter instance drives one agent runtime, chosen with `RUNTIME`. Run
+several instances side by side (one hub identity each) with the systemd
+template unit.
+
+| Runtime | Binary | Streaming | Policies enforced | Status |
+|---|---|---|---|---|
+| `omp` | `omp` | token deltas + tool activity | `default`, `readonly`, `edits`, `full` | verified live (omp 18.1.19) |
+| `claude` | `claude` | token deltas + tool activity | `default`, `readonly`, `edits`, `full` | **experimental**: verified against fixtures only |
+| `opencode` | `opencode` | tool activity only, no token streaming | `default`, `full` only | verified live; set `MODEL` (the configured default may be missing); permission asks are auto-rejected unless `full` |
+
+Details, settings, per-runtime policy mapping, the environment the agent
+sees, and migrating from the old `omp-adapter`:
+`agent/local-adapter/README.md`. To add another runtime: docs/AGENTS.md.
 
 ## Configuration
 
@@ -122,7 +139,7 @@ follow docs/AGENTS.md: mint a per-agent token, connect to
 |---|---|
 | `docs/ARCHITECTURE.md` | components, protocol v1, sync engine, delegation |
 | `docs/DEPLOY.md` | hub + caddy + discord deployment, TLS modes, operations |
-| `docs/AGENTS.md` | protocol surface + how to add an agent |
+| `docs/AGENTS.md` | protocol surface + how to add an agent or a runtime driver |
 | `docs/ADAPTER-CONNECTIVITY.md` | connectivity & security deep-dive |
 | `hub/manager/README.md` | hub configuration, REST surface, token model |
-| `agent/local-adapter/README.md` | adapter env, systemd install |
+| `agent/local-adapter/README.md` | adapter runtimes, env, systemd instances, migration from omp-adapter |

@@ -129,8 +129,80 @@ Prerequisites: a running hub, Python 3.12 (`python3`), `curl`, and `jq`
 ## Capabilities
 
 `capabilities` in `agent.register` is a free-form list the UI surfaces
-(`chat`, `cancel`, `streaming`, `activity` are what local-adapter
-declares, plus `owns_sessions`, which flips the hub into projection mode
+(`chat`, `cancel`, `activity` are what local-adapter always
+declares, plus `streaming` only when the runtime emits token deltas, plus
+`owns_sessions`, which flips the hub into projection mode
 for journal-owning adapters — omit it unless you implement the sync
 protocol). The hub does not otherwise enforce capabilities; declare what
 your agent honors.
+
+## Writing a runtime driver
+
+`agent/local-adapter` can drive any local coding-agent CLI. A *runtime* is a
+module under `agent/local-adapter/agent_adapter/runtimes/` that exposes
+`SPEC: RuntimeSpec`. Most CLIs print one JSON object per line on stdout;
+for those you only write a `Driver` (argv) and a `Parser` (line to events)
+and reuse `JsonlProcessRunner`. Use `runtimes/omp.py` as the reference.
+
+**Driver** (class attributes + two methods; contract in `runtimes/base.py`):
+
+- `name`: the runtime name (`RUNTIME=<name>`, default binary name).
+- `require_final_text`: `True` when exit 0 without a final reply must be a
+  failure (opencode, claude); `False` when an empty reply is acceptable.
+- `cancel_signal`: signal sent to the process group on cancel (SIGKILL
+  follows after a 5 s grace).
+- `auth_env`: fnmatch patterns of the credential variables the CLI needs. The
+  agent process gets only an allow-list of the adapter's environment (base
+  set + `auth_env` + the operator's `ENV_PASSTHROUGH`), never `AGENT_TOKEN`.
+- `argv(binary, req) -> list[str]`: the command for one turn. `req` is a
+  `RunRequest(workspace, resume_id, text, policy, model, env)`; add the
+  resume flag when `resume_id` is set, the policy flags, `--model` when
+  `model` is set, and the operator's `settings.runtime_args`.
+- `parser() -> Parser`: a fresh parser per run.
+
+**Parser**: `feed(obj: dict) -> Parsed` is called once per decoded JSON line
+(non-JSON lines are skipped). `Parsed` carries `events` (`Delta(text)`,
+`Delta(reset=True)` when a new text block starts, `Activity(kind, state,
+tool, detail)` with `kind` `think` or `tool` and `state` `start` or `end`),
+`session_id` (the runtime-native session id, `None` when the line has none),
+`final_text` (authoritative final reply, `None` when absent), and `error`
+(a driver-detected failure). The runner turns a non-zero exit or an `error`
+into a `RunError` that carries the stderr tail, and requires a session id.
+
+**Policies**: a module-level `POLICIES` dict maps each policy
+(`default`, `readonly`, `edits`, `full`) to the argv flags that enforce it.
+List only policies you have verified against the real CLI, and record the
+evidence in a comment; a policy missing from the dict makes the adapter
+refuse to start with it rather than pretend. `default` is `()`: the CLI's own
+configuration decides.
+
+**Registration**: end the module with
+
+```python
+SPEC = RuntimeSpec(
+    name="mycli", streaming=False, policies=frozenset(POLICIES),
+    make_runner=lambda settings: JsonlProcessRunner(MyDriver(settings), settings))
+```
+
+`streaming` states whether the runtime emits token deltas (it becomes the
+`streaming` capability). Add one line to `_BUILTIN` in
+`runtimes/__init__.py`: `"mycli": "agent_adapter.runtimes.mycli"`. Optional
+`titles=` maps native session ids to human titles (omp uses it).
+
+**Tests**: add `tests/stubs/stub_<name>.sh`, an executable bash script that
+ignores its argv except to dump it and prints your CLI's event format. By
+convention it is controlled only through environment variables passed in the
+hub payload `env` (tests set `allow_payload_env=True`): `STUB_ARGS_FILE`
+(write argv, one per line), `STUB_ENV_FILE` (write `env` output),
+`STUB_FAIL=1` (stderr `stub exploded`, exit 1), `STUB_DELAY=<s>`,
+`STUB_STREAM=1` (full event sequence including tool use),
+`STUB_STDERR_FLOOD=1`, `STUB_BIG_LINE=1`. The reply text is `stub reply` (or
+`stub stream`) and the session id `stub-<name>-1`. Parse real captured output
+where you can: fixtures beat guesses, and an unverified driver must say so
+in its docstring (claude is labelled experimental for that reason).
+
+**Not a process?** If the agent is an SDK or a server, skip `Driver`/`Parser`:
+implement the `Runner` protocol from `runtimes/base.py` yourself
+(`pid`, `last_stderr_tail`, `async run(req, emit, on_spawn=None) ->
+RunResult` that awaits `emit(Delta/Activity)` while working, and an
+idempotent `async cancel()`), and return it from `make_runner`.
