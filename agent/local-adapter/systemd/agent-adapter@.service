@@ -11,6 +11,8 @@ EnvironmentFile=%h/.config/agent-adapter/%i.env
 ExecStart=/opt/agent-hub/agent/local-adapter/.venv/bin/python -m agent_adapter
 Restart=on-failure
 RestartSec=5
+# 78 = invalid configuration (EX_CONFIG): do not restart-loop, show `failed`.
+RestartPreventExitStatus=78
 
 [Install]
 WantedBy=default.target

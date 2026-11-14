@@ -50,8 +50,17 @@ is elsewhere.
                                # AGENT_TOKEN=<ADMIN_TOKEN value for now; print it with:
                                #   grep '^ADMIN_TOKEN=' ../../.env | cut -d= -f2>
                                # DEFAULT_WORKSPACE=<dir the agent may use>
+   set -a; . ./.env; set +a    # see the note below
    .venv/bin/python -m agent_adapter
    ```
+
+   The adapter reads its own settings from `.env`, but the agent process only
+   gets variables that exist in the adapter's process environment, so a
+   variable that is only in `.env` (an API key, or something named in
+   `ENV_PASSTHROUGH`) never reaches it. That is what the `set -a; . ./.env;
+   set +a` line before the run is for; `export` the variables yourself
+   instead if you prefer. The shell strips double quotes, so write a JSON
+   list setting single-quoted in `.env`: `ENV_PASSTHROUGH='["MY_VAR"]'`.
 
 3. Verify the fleet (from the repo root, in a second terminal — the adapter
    from step 2 keeps running in the first):
@@ -70,11 +79,14 @@ One adapter instance drives one agent runtime, chosen with `RUNTIME`. Run
 several instances side by side (one hub identity each) with the systemd
 template unit.
 
-| Runtime | Binary | Streaming | Policies enforced | Status |
+| Runtime | Binary | Streaming | Policies available | Status |
 |---|---|---|---|---|
 | `omp` | `omp` | token deltas + tool activity | `default`, `readonly`, `edits`, `full` | verified live (omp 18.1.19) |
 | `claude` | `claude` | token deltas + tool activity | `default`, `readonly`, `edits`, `full` | **experimental**: verified against fixtures only |
 | `opencode` | `opencode` | tool activity only, no token streaming | `default`, `full` only | verified live; set `MODEL` (the configured default may be missing); permission asks are auto-rejected unless `full` |
+
+Each of omp's policy mappings was observed once on omp 18.1.19. None of the
+policies is a sandbox.
 
 Details, settings, per-runtime policy mapping, the environment the agent
 sees, and migrating from the old `omp-adapter`:

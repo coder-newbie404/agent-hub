@@ -165,9 +165,11 @@ loginctl enable-linger $USER
 ```
 
 Verify with `/agent status` in Discord or `GET /agents`: `<agent_id>` lists
-online. Runtimes, policies and settings are documented in
-`agent/local-adapter/README.md`; upgrading an old `omp-adapter` install is
-described in its "Migrating from omp-adapter" section.
+online. If it does not, `systemctl --user status agent-adapter@opencode`
+shows `failed` for invalid configuration (see Troubleshooting). Runtimes,
+policies and settings are documented in `agent/local-adapter/README.md`;
+upgrading an old `omp-adapter` install is described in its "Migrating from
+omp-adapter" section.
 
 ## Operations
 
@@ -262,12 +264,17 @@ DB; the adapter's journal lives on its own machine).
   means the MESSAGE CONTENT INTENT is not enabled for the bot, see "4.
   Discord frontend". `DISCORD_BOT_TOKEN is required` means it is blank in
   `.env`.
-- **Adapter exits at start with `unknown runtime`, `supports policies ...`
-  or `found legacy adapter data`**: `RUNTIME` is not one of the built-in
-  runtimes, `POLICY` is not enforceable by that runtime, or the data
-  directory of the old omp-only adapter still has to be moved. The message
-  names the fix; the last case is covered in the adapter README's
-  "Migrating from omp-adapter" section.
+- **Adapter exits at start (`systemctl --user status` shows `failed`, exit
+  code 78)**: invalid configuration, so systemd does not restart it
+  (`RestartPreventExitStatus=78`). The cause is on stderr
+  (`journalctl --user -u agent-adapter@<instance>`): an unknown or missing
+  `RUNTIME` (the message lists the runtime names), a `POLICY` the runtime
+  cannot enforce (`supports policies ...`), a missing required setting, a
+  list setting such as `ENV_PASSTHROUGH` that is not a JSON list, a TOML
+  syntax error, or `found legacy adapter data` (`RUNTIME=omp` only: move the
+  old data directory before the first start, see the adapter README's
+  "Migrating from omp-adapter" section). Fix it, then `systemctl --user
+  restart agent-adapter@<instance>`.
 - **Adapter or agent lost the hub** (hub restart, network drop): nothing to
   do. `agent/local-adapter` retries on its own with exponential backoff
   that doubles from 1 s up to its `reconnect_max` setting (default 30 s,

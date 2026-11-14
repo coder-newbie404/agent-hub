@@ -8,7 +8,7 @@ runtime; run one instance per runtime (see "Running several instances").
 
 ## Runtimes
 
-| Runtime | Binary | Streaming | Policies enforced | Status |
+| Runtime | Binary | Streaming | Policies available | Status |
 |---|---|---|---|---|
 | `omp` | `omp` | token deltas + tool activity | `default`, `readonly`, `edits`, `full` (omp `--approval-mode`: none, `always-ask`, `write`, `yolo`) | verified live (omp 18.1.19) |
 | `claude` | `claude` | token deltas + tool activity | `default`, `readonly` (`plan`), `edits` (`acceptEdits`), `full` (`bypassPermissions`) | **experimental**: verified against fixtures only, never run against a real `claude` binary here |
@@ -137,11 +137,17 @@ loginctl enable-linger $USER   # keep them running after logout
 
 Data lives apart per instance under `~/.agent-adapter/<AGENT_ID>/`.
 
-Invalid configuration (unknown runtime, a policy the runtime cannot enforce, a
-missing required setting) makes the adapter exit non-zero with a message
-instead of retrying, so `systemctl --user status agent-adapter@<instance>`
-shows `failed` and `journalctl --user -u agent-adapter@<instance>` names the
-problem.
+Invalid configuration makes the adapter print a message to stderr and exit
+with code 78 instead of retrying. That covers an unknown runtime (a missing
+`RUNTIME` lists the available runtime names), a policy the runtime cannot
+enforce, a missing required setting, a malformed list setting (for example
+`ENV_PASSTHROUGH` or `RUNTIME_ARGS` that is not a JSON list), a TOML syntax
+error in the config file, and the legacy-path guard (see "Migrating from
+omp-adapter"). The unit sets `RestartPreventExitStatus=78`, so systemd does
+not restart-loop a misconfigured instance: `systemctl --user status
+agent-adapter@<instance>` shows `failed` and `journalctl --user -u
+agent-adapter@<instance>` names the problem. Fix the env file, then
+`systemctl --user restart agent-adapter@<instance>`.
 
 The unit's `WorkingDirectory` and `ExecStart` point at
 `/opt/agent-hub/agent/local-adapter`: edit both if your checkout lives
@@ -160,6 +166,15 @@ journalctl --user -u agent-adapter@<instance> -f
 systemctl --user restart agent-adapter@<instance>
 systemctl --user stop agent-adapter@<instance>
 ```
+
+## Cancelling a run
+
+A session cancel escalates in two steps. The adapter first sends the
+runtime's cancel signal to the agent's whole process group (`SIGINT` for
+`claude`, so the turn ends cleanly; `SIGTERM` for `omp` and `opencode`), then
+waits up to 5 seconds, then sends `SIGKILL` to the whole process group if
+anything is still alive. Child processes the agent started are in that group
+and are stopped with it.
 
 ## Environment the agent sees
 
@@ -182,6 +197,14 @@ Everything else is dropped, notably `AGENT_TOKEN`, and any variable named like
 an adapter setting (`MANAGER_URL`, `POLICY`, `MODEL`, ...). If a runtime needs
 another variable (for example `GOOGLE_CLOUD_PROJECT`), add it:
 `ENV_PASSTHROUGH=["GOOGLE_CLOUD_PROJECT"]`.
+
+`ENV_PASSTHROUGH` and the `*_API_KEY`-style credential patterns only forward
+variables that exist in the adapter **process** environment: a shell `export`,
+or a systemd `EnvironmentFile`. A variable that appears only in a `.env` file
+is read by the adapter for its own settings but never reaches the agent
+process. When running by hand with a `.env`, export it first (`export
+FOO_API_KEY=...`, or `set -a; . ./.env; set +a`; the shell strips double
+quotes, so single-quote a JSON list there: `ENV_PASSTHROUGH='["MY_VAR"]'`).
 
 ## Security notes
 
@@ -255,13 +278,19 @@ per runtime. To keep your `omp` setup:
    `.env.example`) from your old adapter `.env`: rename `OMP_BIN` to
    `RUNTIME_BIN`, add `RUNTIME=omp`, and keep `AGENT_ID=omp-local` (the old
    default) so the hub identity and your token stay valid.
-3. Move the data directory:
+3. Move the data directory **before the first start of the new adapter**:
    `mkdir -p ~/.agent-adapter && mv ~/.omp-adapter ~/.agent-adapter/omp-local`
-   (the last component is your `AGENT_ID`). The adapter refuses to start until
-   this is done, so an old journal is never orphaned silently.
+   (the last component is your `AGENT_ID`). With `RUNTIME=omp`, the adapter
+   refuses to start (message on stderr, exit code 78) while `~/.omp-adapter`
+   exists and `~/.agent-adapter/<AGENT_ID>/journal` does not, so an old
+   journal is never orphaned silently. The check is on the `journal`
+   directory, not on its parent: creating an empty `~/.agent-adapter/<AGENT_ID>`
+   does not bypass it, and it never applies to `claude` or `opencode`. To
+   start fresh instead, delete or rename `~/.omp-adapter`.
 4. The agent process no longer inherits the adapter's whole environment. If
    it relied on a variable that is not a `*_API_KEY`, add it to
-   `ENV_PASSTHROUGH`.
+   `ENV_PASSTHROUGH` (and export it in the adapter's own environment, see
+   "Environment the agent sees").
 5. Install the template unit and enable the instance:
    `cp systemd/agent-adapter@.service ~/.config/systemd/user/ && systemctl
    --user daemon-reload && systemctl --user enable --now agent-adapter@omp`.
@@ -269,6 +298,9 @@ per runtime. To keep your `omp` setup:
    are no longer in `config/adapter.config.toml`; if you customised them, set
    the matching env variables instead. The module is run as
    `python -m agent_adapter`.
+7. The default display name changed from `OMP Local` to `omp local` (the
+   default is `<runtime> local`). To keep the old name, set
+   `AGENT_NAME="OMP Local"` in the adapter env file.
 
 The hub side needs no change: protocol keys, the `omp_session_id` hub column
 and the journal field `omp` keep their names (they now mean "runtime-native

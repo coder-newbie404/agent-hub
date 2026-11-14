@@ -149,11 +149,16 @@ and reuse `JsonlProcessRunner`. Use `runtimes/omp.py` as the reference.
 - `name`: the runtime name (`RUNTIME=<name>`, default binary name).
 - `require_final_text`: `True` when exit 0 without a final reply must be a
   failure (opencode, claude); `False` when an empty reply is acceptable.
-- `cancel_signal`: signal sent to the process group on cancel (SIGKILL
-  follows after a 5 s grace).
+- `cancel_signal`: the signal sent to the agent's process group on cancel
+  (`SIGINT` for claude so the turn ends cleanly; `SIGTERM` for omp and
+  opencode). Cancel escalates in production: that signal, up to a 5 s grace,
+  then `SIGKILL` of the whole process group.
 - `auth_env`: fnmatch patterns of the credential variables the CLI needs. The
   agent process gets only an allow-list of the adapter's environment (base
   set + `auth_env` + the operator's `ENV_PASSTHROUGH`), never `AGENT_TOKEN`.
+  Only variables present in the adapter's process environment (shell export,
+  systemd `EnvironmentFile`) are forwarded; a variable that is only in a
+  `.env` file read by the adapter itself never reaches the agent process.
 - `argv(binary, req) -> list[str]`: the command for one turn. `req` is a
   `RunRequest(workspace, resume_id, text, policy, model, env)`; add the
   resume flag when `resume_id` is set, the policy flags, `--model` when
