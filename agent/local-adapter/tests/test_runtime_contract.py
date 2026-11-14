@@ -223,8 +223,14 @@ async def test_cancel_acks_fails_cancelled_and_kills_process_group(
     failed = send.of("session.failed")
     assert [f.payload for f in failed] == [{"reason": "cancelled"}]
     assert "session.completed" not in send.types()
-    with pytest.raises(ProcessLookupError):  # whole group, incl. `sleep`
-        os.killpg(pid, 0)
+    def group_gone():  # the killed leader is reaped asynchronously
+        try:
+            os.killpg(pid, 0)
+        except ProcessLookupError:
+            return True
+        return False
+
+    await wait_until(group_gone, timeout=2.0)  # whole group, incl. `sleep`
 
 
 async def test_second_message_while_running_is_busy(tmp_path, rt):

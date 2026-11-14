@@ -26,6 +26,23 @@ POLICIES: dict[str, tuple[str, ...]] = {
     "full": ("--approval-mode=yolo",),
 }
 
+# Tool-arg keys safe to surface as an activity detail, by priority. Never join
+# arbitrary values: write/edit args carry whole file contents.
+_DETAIL_KEYS = ("command", "path", "file_path", "filePath", "pattern",
+                "query", "url", "description")
+_DETAIL_MAX = 120
+
+
+def _detail(intent, args) -> str:
+    if isinstance(intent, str) and intent:
+        return intent[:_DETAIL_MAX]
+    if isinstance(args, dict):
+        for key in _DETAIL_KEYS:
+            v = args.get(key)
+            if isinstance(v, str) and v:
+                return v[:_DETAIL_MAX]
+    return ""
+
 
 class OmpParser:
     def feed(self, ev: dict) -> Parsed:
@@ -48,9 +65,7 @@ class OmpParser:
             elif at == "thinking_start":
                 p.events.append(Activity("think"))
         elif t == "tool_execution_start":
-            args = ev.get("args") or {}
-            detail = (ev.get("intent")
-                      or " ".join(str(v) for v in args.values() if v))[:120]
+            detail = _detail(ev.get("intent"), ev.get("args"))
             p.events.append(Activity("tool", "start",
                                      ev.get("toolName", "tool"), detail))
         elif t == "tool_execution_end":

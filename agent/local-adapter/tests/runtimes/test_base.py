@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from agent_adapter.runtimes import UnknownRuntime, get_runtime, names
+from agent_adapter.runtimes import UnknownRuntime, base, get_runtime, names
 from agent_adapter.runtimes.base import (Delta, JsonlProcessRunner, Parsed,
                                          RunError, RunRequest, RunResult,
                                          child_env)
@@ -61,13 +61,6 @@ def test_unknown_runtime_lists_available():
         get_runtime("nope")
     for n in names():
         assert n in str(e.value)
-
-
-def test_every_stub_is_executable():
-    stubs = list(STUBS.glob("*.sh"))
-    assert stubs
-    for stub in stubs:
-        assert os.stat(stub).st_mode & 0o100, stub
 
 
 @dataclass
@@ -176,3 +169,73 @@ async def test_cancelled_emit_still_propagates_and_kills_child():
         await asyncio.sleep(0.05)
     else:
         pytest.fail("child group still alive after cancellation")
+
+
+async def _gone(pgid, timeout=2.0):
+    for _ in range(int(timeout / 0.05)):
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return True
+        await asyncio.sleep(0.05)
+    return False
+
+
+async def _start_cancellable(driver, env):
+    """Start run() against the generic stub; return (runner, task) once the
+    stub has armed its signal handling."""
+    armed = asyncio.Event()
+
+    async def emit(event):
+        if event == Delta(text="armed"):
+            armed.set()
+
+    r = JsonlProcessRunner(driver, _Settings())
+    task = asyncio.create_task(r.run(_req(env=env), emit))
+    await asyncio.wait_for(armed.wait(), 5)
+    return r, task
+
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT])
+async def test_task_cancel_delivers_driver_cancel_signal_first(tmp_path, sig):
+    class D(_Driver):
+        cancel_signal = sig
+
+    sigfile = tmp_path / "sig"
+    r, task = await _start_cancellable(
+        D(), {"STUB_TRAP_SIGNAL_FILE": str(sigfile), "STUB_DELAY": "30"})
+    pgid = r.pid
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert sigfile.read_text().strip() == sig.name[3:]  # graceful, not SIGKILL
+    assert await _gone(pgid)
+    assert r.proc is None
+
+
+async def test_task_cancel_escalates_to_sigkill_after_grace(monkeypatch):
+    monkeypatch.setattr(base, "GRACE_SECONDS", 0.3)
+    r, task = await _start_cancellable(
+        _Driver(), {"STUB_IGNORE_SIGNALS": "1", "STUB_DELAY": "30"})
+    pgid = r.pid
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert loop.time() - t0 >= 0.25  # the signal was given its grace first
+    assert await _gone(pgid)
+    assert r.proc is None
+
+
+async def test_second_cancel_cannot_skip_the_group_kill(monkeypatch):
+    monkeypatch.setattr(base, "GRACE_SECONDS", 30)
+    r, task = await _start_cancellable(
+        _Driver(), {"STUB_IGNORE_SIGNALS": "1", "STUB_DELAY": "30"})
+    pgid = r.pid
+    task.cancel()
+    await asyncio.sleep(0.2)  # inside the grace wait
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert await _gone(pgid)

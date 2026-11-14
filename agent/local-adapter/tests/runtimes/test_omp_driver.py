@@ -9,7 +9,7 @@ import pytest
 from agent_adapter.runtimes import get_runtime
 from agent_adapter.runtimes.base import (Activity, Delta, RunError,
                                          RunRequest, RunResult)
-from agent_adapter.runtimes.omp import POLICIES, omp_titles
+from agent_adapter.runtimes.omp import POLICIES, OmpParser, omp_titles
 
 STUB = str(pathlib.Path(__file__).parent.parent / "stubs" / "stub_omp.sh")
 make_runner = get_runtime("omp").make_runner
@@ -219,9 +219,41 @@ async def test_default_policy_adds_no_approval_flag(tmp_path):
                    for a in args_file.read_text().splitlines())
 
 
-def test_spec_policies_match_table():
-    assert get_runtime("omp").policies == frozenset(POLICIES)
-    assert set(POLICIES) == {"default", "readonly", "edits", "full"}
+def test_omp_policies_are_exactly_the_verified_flags():
+    assert get_runtime("omp").policies == {"default", "readonly", "edits",
+                                           "full"}
+    assert POLICIES == {
+        "default": (),
+        "readonly": ("--approval-mode=always-ask",),
+        "edits": ("--approval-mode=write",),
+        "full": ("--approval-mode=yolo",),
+    }
+
+
+def _tool_detail(**ev):
+    p = OmpParser().feed({"type": "tool_execution_start", "toolName": "t",
+                          **ev})
+    return p.events[0].detail
+
+
+def test_tool_detail_prefers_intent_then_known_keys():
+    assert _tool_detail(intent="Listing files",
+                        args={"command": "ls"}) == "Listing files"
+    assert _tool_detail(args={"content": "x", "path": "a.py",
+                              "command": "ls"}) == "ls"
+    assert _tool_detail(args={"filePath": "b.py"}) == "b.py"
+    assert _tool_detail(args={"query": "", "url": "http://u"}) == "http://u"
+
+
+def test_tool_detail_never_forwards_file_content():
+    secret = "SECRET-FILE-CONTENT"
+    assert _tool_detail(args={"content": secret, "newText": secret,
+                              "n": 3}) == ""
+    assert secret not in _tool_detail(args={"content": secret,
+                                            "path": "a.py"})
+    assert _tool_detail(args=["not", "a", "dict"]) == ""
+    assert len(_tool_detail(intent="x" * 500)) == 120
+    assert len(_tool_detail(args={"command": "y" * 500})) == 120
 
 
 @pytest.mark.parametrize("text", [

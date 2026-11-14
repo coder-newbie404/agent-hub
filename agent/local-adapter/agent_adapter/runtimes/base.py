@@ -215,7 +215,15 @@ class JsonlProcessRunner:
                 if parsed.error:
                     error = parsed.error
         except asyncio.CancelledError:
-            await self._kill_child()
+            # Cancelled mid-run (session cancel): end the turn the driver's
+            # way (cancel_signal + grace) before SIGKILL. Shielded so a
+            # second cancel cannot cut the escalation short; the finally
+            # still guarantees the group is killed.
+            proc = self.proc
+            try:
+                await asyncio.shield(self._stop_after_cancel(proc, stderr_task))
+            finally:
+                await self._kill_child()
             raise
         except Exception as exc:
             # A mid-stream failure must not orphan a full-tools agent.
@@ -237,27 +245,50 @@ class JsonlProcessRunner:
             raise RunError(f"{d.name} produced no final reply", tail)
         return RunResult(session_id, final or "")
 
+    async def _signal_group(self, proc, sig: int) -> bool:
+        try:
+            os.killpg(os.getpgid(proc.pid), sig)
+        except ProcessLookupError:
+            return False
+        return True
+
+    async def _graceful_stop(self, proc) -> None:
+        """cancel_signal, wait up to GRACE_SECONDS, then SIGKILL the group."""
+        if not await self._signal_group(proc, self.driver.cancel_signal):
+            return
+        try:
+            await asyncio.wait_for(proc.wait(), GRACE_SECONDS)
+        except TimeoutError:
+            await self._signal_group(proc, signal.SIGKILL)
+            await proc.wait()
+
+    async def _stop_after_cancel(self, proc, stderr_task) -> None:
+        try:
+            if proc.returncode is None:
+                await self._graceful_stop(proc)
+            else:
+                await proc.wait()
+            # sweep stragglers the leader left behind (pgid == leader pid)
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:  # wait_for cancels the drain task itself on timeout
+                self.last_stderr_tail = await asyncio.wait_for(
+                    stderr_task, GRACE_SECONDS)
+            except Exception:
+                pass
+        finally:
+            if self.proc is proc:
+                self.proc = None
+
     async def _kill_child(self) -> None:
         if self.proc is None or self.proc.returncode is not None:
             return
-        try:
-            os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        await self._signal_group(self.proc, signal.SIGKILL)
 
     async def cancel(self) -> None:
         proc = self.proc
         if proc is None or proc.returncode is not None:
             return
-        try:
-            os.killpg(os.getpgid(proc.pid), self.driver.cancel_signal)
-        except ProcessLookupError:
-            return
-        try:
-            await asyncio.wait_for(proc.wait(), GRACE_SECONDS)
-        except TimeoutError:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            await proc.wait()
+        await self._graceful_stop(proc)
