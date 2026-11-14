@@ -20,14 +20,30 @@ from agent_adapter.protocol import (AGENT_MESSAGE, Envelope, SESSION_ACTIVITY,
                                     SESSION_COMPLETED, SESSION_DELTA,
                                     SESSION_FAILED, SESSION_WAITING)
 from agent_adapter.runtimes import get_runtime
-from agent_adapter.runtimes.base import (Activity, Delta, Event, RunRequest,
-                                         Runner)
+from agent_adapter.runtimes.base import (Activity, Delta, Event, RunError,
+                                         RunRequest, Runner)
 
 logger = logging.getLogger(__name__)
 
 # Bounded cache of recently accepted session.message request ids; a retried
 # request inside this window is acked as already-done, never re-spawned.
 DEDUPE_CACHE_SIZE = 512
+
+REASON_MAX = 500
+REASON_STDERR_LINES = 3
+
+
+def _failure_reason(exc: Exception) -> str:
+    """session.failed reason: the error text, plus the last stderr lines of
+    the agent process (where the real cause lives) when the runner kept
+    any. Capped as a whole; the head of the message wins."""
+    reason = str(exc)
+    if isinstance(exc, RunError):
+        lines = [ln.strip() for ln in exc.stderr_tail.splitlines()
+                 if ln.strip()]
+        if lines:
+            reason = f"{reason}: {' | '.join(lines[-REASON_STDERR_LINES:])}"
+    return reason[:REASON_MAX]
 
 
 def _now() -> str:
@@ -561,7 +577,8 @@ class SessionRuntime:
         except Exception as exc:
             await self._emit(Envelope(type=SESSION_FAILED,
                                       request_id=request_id, session_id=sid,
-                                      payload={"reason": str(exc)[:500]}))
+                                      payload={"reason":
+                                               _failure_reason(exc)}))
         finally:
             self.journal.run_finished(sid, status)
             state_entry = self._state.get(sid)

@@ -10,7 +10,7 @@ import agent_adapter.runtime as runtime_mod
 from agent_adapter.config import Settings
 from agent_adapter.runtime import SessionRuntime
 from agent_adapter.protocol import Envelope
-from agent_adapter.runtimes.base import Activity, Delta, RunResult
+from agent_adapter.runtimes.base import Activity, Delta, RunError, RunResult
 
 STUB = str(pathlib.Path(__file__).parent / "stubs" / "stub_omp.sh")
 
@@ -407,3 +407,50 @@ async def test_refresh_titles_skips_other_runtimes_and_untitled_runtimes(
     rt2._state["s2"] = {"omp": "c-id", "rt": "omp", "ws": "/w",
                         "status": "idle"}
     assert rt2.refresh_titles() == 0  # FakeSpec has titles=None
+
+
+async def _failure_reason(tmp_path, monkeypatch, exc):
+    class FailingRunner(CapturingRunner):
+        async def run(self, req, emit, on_spawn=None):
+            raise exc
+
+    use_runner(monkeypatch, FailingRunner)
+    send = Recorder()
+    rt = SessionRuntime(make_settings(tmp_path), send)
+    await rt.start()
+    rt.upsert_session("s1", "ws-a")
+    await _run_once(rt)
+    failed = [e for e in send.envs if e.type == "session.failed"]
+    assert len(failed) == 1
+    return failed[0].payload["reason"]
+
+
+async def test_failure_reason_carries_last_stderr_lines(tmp_path,
+                                                        monkeypatch):
+    reason = await _failure_reason(
+        tmp_path, monkeypatch,
+        RunError("boom", " line1\n\nline2 \n  line3\nline4\n\n"))
+    assert reason == "boom: line2 | line3 | line4"
+
+
+async def test_failure_reason_without_stderr_is_just_the_message(
+        tmp_path, monkeypatch):
+    assert await _failure_reason(tmp_path, monkeypatch,
+                                 RunError("boom", "")) == "boom"
+    assert await _failure_reason(tmp_path, monkeypatch,
+                                 RunError("boom", "\n  \n")) == "boom"
+
+
+async def test_failure_reason_is_capped_keeping_the_head(tmp_path,
+                                                         monkeypatch):
+    reason = await _failure_reason(
+        tmp_path, monkeypatch, RunError("boom", "x" * 5000))
+    assert len(reason) == 500
+    assert reason.startswith("boom: xxx")
+
+
+async def test_failure_reason_for_other_exceptions_is_unchanged(
+        tmp_path, monkeypatch):
+    assert await _failure_reason(tmp_path, monkeypatch,
+                                 ValueError("bad " + "y" * 600)
+                                 ) == ("bad " + "y" * 600)[:500]
