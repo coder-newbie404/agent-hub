@@ -1,4 +1,5 @@
 import asyncio
+import os
 import pathlib
 import sqlite3
 from dataclasses import dataclass, field
@@ -61,12 +62,25 @@ async def test_run_failure_raises_with_stderr():
 
 async def test_cancel_kills_process_group():
     r = runner()
+    started = asyncio.get_running_loop().time()
     task = asyncio.create_task(
         r.run(req("slow job", env={"STUB_DELAY": "10"}), _noop))
     await asyncio.sleep(0.3)  # stub is inside its sleep
+    pid = r.pid
+    assert pid is not None
     await r.cancel()
     with pytest.raises(RunError):
         await task
+    assert asyncio.get_running_loop().time() - started < 5
+    # the whole group (bash leader AND its `sleep` child) is gone
+    for _ in range(50):
+        try:
+            os.killpg(pid, 0)
+        except ProcessLookupError:
+            break
+        await asyncio.sleep(0.05)
+    else:
+        pytest.fail("process group still alive after cancel")
 
 
 async def test_run_survives_stderr_flood():

@@ -10,10 +10,13 @@ import asyncio
 import ctypes
 import fnmatch
 import json
+import logging
 import os
 import signal
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, ClassVar, Mapping, Protocol
+
+logger = logging.getLogger(__name__)
 
 GRACE_SECONDS = 5.0
 STDERR_TAIL_BYTES = 2000
@@ -83,6 +86,9 @@ class RunError(Exception):
         self.stderr_tail = stderr_tail
 
 
+# Progress sink. Best-effort: the runner swallows (and debug-logs) any
+# exception an emit raises, so a broken sink never fails or kills the run;
+# only cancellation propagates.
 Emit = Callable[[Event], Awaitable[None]]
 
 
@@ -197,7 +203,11 @@ class JsonlProcessRunner:
                     continue
                 parsed = parser.feed(obj)
                 for event in parsed.events:
-                    await emit(event)
+                    try:
+                        await emit(event)
+                    except Exception:  # CancelledError is BaseException
+                        logger.debug("emit failed; event dropped",
+                                     exc_info=True)
                 if parsed.session_id:
                     session_id = parsed.session_id
                 if parsed.final_text is not None:
