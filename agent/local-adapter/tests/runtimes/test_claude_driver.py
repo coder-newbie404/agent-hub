@@ -1,6 +1,8 @@
 import asyncio
+import os
 import pathlib
 import signal
+import time
 from dataclasses import dataclass, field
 
 import pytest
@@ -8,7 +10,7 @@ import pytest
 from agent_adapter.runtimes import get_runtime
 from agent_adapter.runtimes.base import (Activity, Delta, RunError, RunRequest,
                                          RunResult)
-from agent_adapter.runtimes.claude import (POLICIES, ClaudeDriver,
+from agent_adapter.runtimes.claude import (POLICIES, SPEC, ClaudeDriver,
                                            ClaudeParser)
 
 STUB = str(pathlib.Path(__file__).parent.parent / "stubs" / "stub_claude.sh")
@@ -138,24 +140,55 @@ async def test_cancel_sends_sigint_first(tmp_path):
     assert sig_file.read_text().strip() == "int"
 
 
-async def test_cancel_kills_process_group():
+async def test_cancel_kills_whole_process_group_promptly():
     r = runner()
+    started = time.monotonic()
     task = asyncio.create_task(
         r.run(req("slow job", env={"STUB_DELAY": "30"}), _noop))
-    await asyncio.sleep(0.3)  # stub is inside its sleep
+    await asyncio.sleep(0.5)  # stub (and its `sleep` child) are running
+    pgid = r.pid
+    assert pgid is not None
+    os.killpg(pgid, 0)  # group exists before cancel
     await asyncio.wait_for(r.cancel(), 10)
     with pytest.raises(RunError):
         await asyncio.wait_for(task, 10)
+    assert time.monotonic() - started < 10  # well under the 30 s stub delay
+    deadline = time.monotonic() + 3
+    while True:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            break  # leader and every child (the stub's `sleep`) are gone
+        assert time.monotonic() < deadline, "process group survived cancel"
+        await asyncio.sleep(0.05)
 
 
 # ---- argv / policies -----------------------------------------------------
 
 async def test_argv_has_headless_streaming_flags(tmp_path):
     argv = await _argv(tmp_path, text="do the thing")
-    assert argv[argv.index("-p") + 1] == "do the thing"
+    assert "-p" in argv
     assert argv[argv.index("--output-format") + 1] == "stream-json"
     assert "--verbose" in argv and "--include-partial-messages" in argv
     assert "--resume" not in argv and "--permission-mode" not in argv
+
+
+async def test_text_is_last_after_double_dash(tmp_path):
+    argv = await _argv(tmp_path, text="do the thing", resume="s1",
+                       policy="edits", model="m",
+                       settings=FakeSettings(runtime_args=["--x", "y"]))
+    assert argv[-2:] == ["--", "do the thing"]
+    assert argv.count("--") == 1
+
+
+@pytest.mark.parametrize("text", [
+    "--dangerously-skip-permissions", "--permission-mode bypassPermissions",
+    "--permission-mode"])
+async def test_flag_like_text_can_only_follow_double_dash(tmp_path, text):
+    argv = await _argv(tmp_path, text=text)
+    assert argv[-2:] == ["--", text]
+    assert text not in argv[:-2]
+    assert "--permission-mode" not in argv[:-2]
 
 
 async def test_resume_adds_resume_flag(tmp_path):
@@ -177,14 +210,14 @@ async def test_model_and_runtime_args_reach_argv(tmp_path):
     argv = await _argv(tmp_path, model="m",
                        settings=FakeSettings(runtime_args=["--x", "y"]))
     assert argv[argv.index("--model") + 1] == "m"
-    assert argv[-2:] == ["--x", "y"]
+    assert argv[-4:] == ["--x", "y", "--", "hello"]  # args before `--`
 
 
-def test_spec_policies_match_table():
-    spec = get_runtime("claude")
-    assert spec.streaming is True
-    assert spec.policies == frozenset(POLICIES)
-    assert set(POLICIES) == {"default", "readonly", "edits", "full"}
+def test_spec_declares_streaming_and_all_four_policies():
+    assert get_runtime("claude") is SPEC
+    assert SPEC.streaming is True
+    assert SPEC.policies == frozenset(
+        {"default", "readonly", "edits", "full"})
 
 
 # ---- env -----------------------------------------------------------------
@@ -223,3 +256,96 @@ def test_parser_error_result_sets_error_and_final_text():
     assert p.error == "error_max_turns"
     assert p.session_id == "s"
     assert p.final_text == ""
+
+
+def _user(content):
+    return {"type": "user", "message": {"content": content}}
+
+
+def _assistant(content):
+    return {"type": "assistant", "message": {"content": content}}
+
+
+@pytest.mark.parametrize("obj", [
+    _user("plain string content"),
+    _user(None),
+    _user({"not": "a list"}),
+    _user(["str block", 3, None, {"type": "tool_result"}]),
+    _assistant("plain string content"),
+    _assistant(None),
+    _assistant(["str block", 3, None]),
+    {"type": "user", "message": None},
+    {"type": "user", "message": "text"},
+    {"type": "assistant", "message": ["x"]},
+    {"type": "stream_event", "event": "nope"},
+    {"type": "stream_event", "event": None},
+    {"type": "stream_event", "event": {"type": "content_block_start",
+                                       "content_block": "text"}},
+    {"type": "stream_event", "event": {"delta": ["x"]}},
+    {"type": "stream_event", "event": {"delta": {"type": "text_delta",
+                                                 "text": None}}},
+    {"type": "result", "result": {"a": 1}},
+    {"session_id": 12345, "type": "system"},
+    {"type": ["list"]},
+])
+def test_parser_ignores_unexpected_shapes_instead_of_raising(obj):
+    p = ClaudeParser().feed(obj)  # must not raise: a crash SIGKILLs the run
+    assert p.session_id is None or isinstance(p.session_id, str)
+    assert p.error is None or isinstance(p.error, str)
+    assert p.final_text is None or isinstance(p.final_text, str)
+    assert all(isinstance(getattr(e, "text", ""), str) for e in p.events)
+
+
+def test_parser_tool_use_with_non_dict_input_has_empty_detail():
+    p = ClaudeParser().feed(_assistant([
+        {"type": "tool_use", "id": "t", "name": "Bash", "input": "ls"},
+        {"type": "tool_use", "id": "u", "name": "Read", "input": None},
+        {"type": "tool_use", "id": "v", "name": "Read", "input": ["a"]}]))
+    assert p.events == [Activity("tool", "start", "Bash", ""),
+                        Activity("tool", "start", "Read", ""),
+                        Activity("tool", "start", "Read", "")]
+
+
+def test_parser_tool_result_after_odd_blocks_still_resolves_name():
+    parser = ClaudeParser()
+    parser.feed(_assistant(["junk", {"type": "tool_use", "id": "t",
+                                     "name": "Grep", "input": {}}]))
+    p = parser.feed(_user(["junk", {"type": "tool_result",
+                                    "tool_use_id": "t"}]))
+    assert p.events == [Activity("tool", "end", "Grep")]
+
+
+def _detail(name, inp):
+    p = ClaudeParser().feed(_assistant([
+        {"type": "tool_use", "id": "t", "name": name, "input": inp}]))
+    return p.events[0].detail
+
+
+def test_detail_never_leaks_file_content_or_other_values():
+    secret = "SECRET FILE BODY"
+    assert _detail("Write", {"file_path": "/w/a.py", "content": secret}) \
+        == "/w/a.py"
+    assert _detail("Edit", {"file_path": "/w/a.py", "old_string": secret,
+                            "new_string": secret}) == "/w/a.py"
+    assert _detail("Write", {"content": secret}) == ""
+    assert _detail("Mystery", {"a": secret, "b": 1}) == ""
+
+
+def test_detail_picks_by_key_priority():
+    assert _detail("Bash", {"description": "d", "command": "ls -la"}) \
+        == "ls -la"
+    assert _detail("Read", {"path": "/p", "file_path": "/f"}) == "/f"
+    assert _detail("Grep", {"pattern": "foo", "path": "/p"}) == "/p"
+    assert _detail("WebSearch", {"query": "q"}) == "q"
+    assert _detail("WebFetch", {"url": "http://x", "prompt": "p"}) == "http://x"
+    assert _detail("Task", {"description": "d", "prompt": "p"}) == "d"
+    assert _detail("Task", {"prompt": "p"}) == "p"
+
+
+def test_detail_skips_empty_and_non_string_priority_values():
+    assert _detail("Bash", {"command": "", "description": "d"}) == "d"
+    assert _detail("Bash", {"command": 5, "description": "d"}) == "d"
+
+
+def test_detail_is_capped_at_120_chars():
+    assert _detail("Bash", {"command": "x" * 500}) == "x" * 120

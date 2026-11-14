@@ -17,40 +17,78 @@ POLICIES = {
 }
 
 
+# Tool-input keys safe to surface as an activity detail, by priority. Never
+# join arbitrary values: Write/Edit inputs carry whole file contents.
+_DETAIL_KEYS = ("command", "file_path", "path", "pattern", "query", "url",
+                "description", "prompt")
+_DETAIL_MAX = 120
+
+
+def _dict(v) -> dict:
+    return v if isinstance(v, dict) else {}
+
+
+def _blocks(message) -> list[dict]:
+    """Dict content blocks of a message; any other shape yields nothing."""
+    content = _dict(message).get("content")
+    if not isinstance(content, list):
+        return []
+    return [b for b in content if isinstance(b, dict)]
+
+
+def _detail(args) -> str:
+    args = _dict(args)
+    for key in _DETAIL_KEYS:
+        v = args.get(key)
+        if isinstance(v, str) and v:
+            return v[:_DETAIL_MAX]
+    return ""
+
+
+def _str(v, default: str = "") -> str:
+    return v if isinstance(v, str) else default
+
+
 class ClaudeParser:
+    """Total over arbitrary JSON objects: unexpected shapes are ignored (an
+    exception here would make the runner SIGKILL an otherwise fine run)."""
+
     def __init__(self) -> None:
         self._tools: dict[str, str] = {}   # tool_use id -> name
 
     def feed(self, obj: dict) -> Parsed:
-        p = Parsed(session_id=obj.get("session_id"))
+        sid = obj.get("session_id")
+        p = Parsed(session_id=sid if isinstance(sid, str) else None)
         t = obj.get("type")
         if t == "stream_event":
-            ev = obj.get("event") or {}
+            ev = _dict(obj.get("event"))
             if ev.get("type") == "content_block_start" and (
-                    (ev.get("content_block") or {}).get("type") == "text"):
+                    _dict(ev.get("content_block")).get("type") == "text"):
                 p.events.append(Delta(reset=True))
             else:
-                d = ev.get("delta") or {}
-                if d.get("type") == "text_delta":
-                    p.events.append(Delta(text=d.get("text", "")))
+                d = _dict(ev.get("delta"))
+                text = d.get("text")
+                if d.get("type") == "text_delta" and isinstance(text, str):
+                    p.events.append(Delta(text=text))
         elif t == "assistant":
-            for block in (obj.get("message") or {}).get("content", []):
+            for block in _blocks(obj.get("message")):
                 if block.get("type") == "tool_use":
-                    name = block.get("name", "tool")
-                    self._tools[block.get("id", "")] = name
-                    args = block.get("input") or {}
-                    detail = " ".join(str(v) for v in args.values() if v)[:120]
-                    p.events.append(Activity("tool", "start", name, detail))
+                    name = _str(block.get("name"), "tool")
+                    self._tools[_str(block.get("id"))] = name
+                    p.events.append(Activity(
+                        "tool", "start", name, _detail(block.get("input"))))
         elif t == "user":
-            for block in (obj.get("message") or {}).get("content", []):
+            for block in _blocks(obj.get("message")):
                 if block.get("type") == "tool_result":
-                    name = self._tools.get(block.get("tool_use_id", ""), "tool")
+                    name = self._tools.get(_str(block.get("tool_use_id")),
+                                           "tool")
                     p.events.append(Activity("tool", "end", name))
         elif t == "result":
-            p.final_text = obj.get("result") or ""
-            if obj.get("is_error"):
-                p.error = str(obj.get("result") or obj.get("subtype")
-                              or "claude error")
+            result = _str(obj.get("result"))
+            p.final_text = result
+            if obj.get("is_error") is True:
+                p.error = (result or _str(obj.get("subtype"))
+                           or "claude error")
         return p
 
 
@@ -66,14 +104,20 @@ class ClaudeDriver:
         self.settings = settings
 
     def argv(self, binary: str, req: RunRequest) -> list[str]:
-        args = [binary, "-p", req.text, "--output-format", "stream-json",
-                "--verbose", "--include-partial-messages"]
+        args = [binary, "-p", "--output-format", "stream-json", "--verbose",
+                "--include-partial-messages"]
         if req.resume_id:
             args += ["--resume", req.resume_id]
         args += list(POLICIES[req.policy])
         if req.model:
             args += ["--model", req.model]
         args += list(self.settings.runtime_args)
+        # Prompt text is untrusted (hub message) and goes LAST after `--`, so
+        # a message like `--dangerously-skip-permissions` cannot be parsed as a
+        # flag. UNVERIFIED against a real claude binary (none installed here):
+        # derived from the docs' "-p/--print is boolean, prompt is positional"
+        # and POSIX `--` semantics.
+        args += ["--", req.text]
         return args            # cwd is the workspace (no --cwd flag)
 
     def parser(self) -> ClaudeParser:
