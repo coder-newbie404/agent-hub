@@ -13,3 +13,15 @@ def executable_stubs():
     for stub in STUBS.glob("*.sh"):
         stub.chmod(stub.stat().st_mode | stat.S_IRWXU | stat.S_IRGRP
                    | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+
+
+@pytest.fixture(autouse=True)
+def isolated_home(request, tmp_path_factory, monkeypatch):
+    """No test may touch the real home: default journal/delegation paths
+    derive from ~ and creating them there would also defeat the legacy-journal
+    guard. test_real_binaries needs the real HOME for the CLIs' stored login."""
+    if request.node.fspath.basename == "test_real_binaries.py":
+        return
+    home = tmp_path_factory.mktemp("home")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))

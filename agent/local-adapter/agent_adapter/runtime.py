@@ -529,8 +529,11 @@ class SessionRuntime:
                            "starting fresh instead of resuming %s", sid,
                            entry.get("rt") or "omp", self.spec.name, resume)
             resume = None
+        # absolute, so a relative workspace like "-x" can never be parsed as
+        # an option by the runtime CLI's --cwd/--dir
         req = RunRequest(
-            workspace=workspace, resume_id=resume, text=text,
+            workspace=os.path.abspath(os.path.expanduser(workspace)),
+            resume_id=resume, text=text,
             policy=self.settings.policy, model=self.settings.model,
             env=(test_env or {}) if self.settings.allow_payload_env else {})
 

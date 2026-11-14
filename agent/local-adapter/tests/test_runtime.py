@@ -3,6 +3,7 @@ cancel states. The runtime is the source of truth — these tests pin the
 failsafes the hub projection relies on."""
 import asyncio
 import json
+import os
 import pathlib
 import subprocess
 
@@ -133,7 +134,7 @@ async def test_duplicate_request_never_respawns(tmp_path, monkeypatch):
     # same request redelivered (at-least-once hub/WS retry): acked, never
     # re-spawned
     assert rt.begin_run("s1", "hi", "req-1", None) == "duplicate"
-    assert calls == [("ws-a", None)]
+    assert calls == [(os.path.abspath("ws-a"), None)]
     # and the session is idle again, so a fresh request still starts
     assert rt.begin_run("s1", "hi", "req-2", None) == "started"
     await asyncio.wait_for(rt._active["s1"], 5)
@@ -306,7 +307,7 @@ async def test_legacy_journal_entry_without_rt_resumes_as_omp(tmp_path,
     await replayed.start()
     await _run_once(replayed)
     assert [(r.workspace, r.resume_id) for r in CapturingRunner.reqs] == [
-        ("ws-a", "old-id")]
+        (os.path.abspath("ws-a"), "old-id")]
 
 
 async def test_session_of_another_runtime_starts_fresh(tmp_path, monkeypatch,
@@ -320,7 +321,7 @@ async def test_session_of_another_runtime_starts_fresh(tmp_path, monkeypatch,
     with caplog.at_level("WARNING", logger="agent_adapter.runtime"):
         await _run_once(replayed)
     assert [(r.workspace, r.resume_id) for r in CapturingRunner.reqs] == [
-        ("ws-a", None)]
+        (os.path.abspath("ws-a"), None)]
     assert "claude" in caplog.text and "c-id" in caplog.text
     # the fresh native session replaces the foreign one and is tagged omp
     assert replayed._state["s1"]["omp"] == "new-id"
@@ -341,6 +342,21 @@ async def test_run_journals_runtime_tag(tmp_path, monkeypatch):
     replayed = SessionRuntime(make_settings(tmp_path), Recorder())
     await replayed.start()
     assert replayed._state["s1"]["rt"] == "omp"
+
+
+async def test_relative_workspace_reaches_runner_absolute(tmp_path,
+                                                          monkeypatch):
+    """A workspace named like an option ("-x") must never be handed to the
+    CLI's --cwd/--dir as a bare relative path."""
+    use_runner(monkeypatch, CapturingRunner)
+    CapturingRunner.reqs = []
+    monkeypatch.chdir(tmp_path)
+    rt = SessionRuntime(make_settings(tmp_path), Recorder())
+    await rt.start()
+    rt.upsert_session("s1", "-x")
+    await _run_once(rt)
+    assert [r.workspace for r in CapturingRunner.reqs] == [
+        str(tmp_path / "-x")]
 
 
 async def test_payload_env_reaches_runner_only_when_allowed(tmp_path,

@@ -33,22 +33,25 @@ def test_run_does_not_restart_on_deliberate_exit(monkeypatch):
     """A config refusal (SystemExit) must reach the process exit code, not
     spin in the crash-restart loop."""
     def fake_main():
-        raise SystemExit("refusing to start")
+        raise SystemExit(78)
 
     monkeypatch.setattr(entry, "main", fake_main)
     monkeypatch.setattr(entry.time, "sleep",
                         lambda s: pytest.fail("supervisor restarted"))
-    with pytest.raises(SystemExit, match="refusing to start"):
+    with pytest.raises(SystemExit) as ei:
         entry.run()
+    assert ei.value.code == 78
 
 
-def test_main_refuses_to_start_on_legacy_data(monkeypatch):
+def test_main_refuses_to_start_on_legacy_data(monkeypatch, capsys):
     monkeypatch.setattr(entry, "Settings", lambda: object())
     monkeypatch.setattr(entry, "legacy_path_error",
                         lambda settings: "found legacy adapter data")
     monkeypatch.setattr(entry, "AdapterAgent", lambda *a: pytest.fail("started"))
-    with pytest.raises(SystemExit, match="found legacy adapter data"):
+    with pytest.raises(SystemExit) as ei:
         asyncio.run(entry.main())
+    assert ei.value.code == 78
+    assert "found legacy adapter data" in capsys.readouterr().err
 
 
 @pytest.fixture
@@ -70,31 +73,62 @@ def env(tmp_path, monkeypatch):
     return monkeypatch
 
 
-def test_unknown_runtime_exits_instead_of_crash_looping(env):
-    env.setenv("RUNTIME", "bogus")
+def _refused(capsys) -> str:
     with pytest.raises(SystemExit) as ei:
         entry.run()
-    msg = str(ei.value.code)
+    assert ei.value.code == 78   # EX_CONFIG: unit uses RestartPreventExitStatus
+    return capsys.readouterr().err
+
+
+def test_unknown_runtime_exits_instead_of_crash_looping(env, capsys):
+    env.setenv("RUNTIME", "bogus")
+    msg = _refused(capsys)
     assert "unknown runtime 'bogus'" in msg
     for name in ("claude", "omp", "opencode"):
         assert name in msg
 
 
-def test_unsupported_policy_exits_with_supported_list(env):
+def test_unsupported_policy_exits_with_supported_list(env, capsys):
     env.setenv("POLICY", "bogus")
-    with pytest.raises(SystemExit) as ei:
-        entry.run()
-    msg = str(ei.value.code)
+    msg = _refused(capsys)
     assert "supports policies" in msg
     for policy in ("default", "edits", "full", "readonly"):
         assert policy in msg
 
 
-def test_missing_required_setting_exits_naming_it(env):
+def test_missing_required_setting_exits_naming_it(env, capsys):
     env.delenv("MANAGER_URL")
-    with pytest.raises(SystemExit) as ei:
-        entry.run()
-    assert "manager_url" in str(ei.value.code)
+    assert "manager_url" in _refused(capsys)
+
+
+def test_unset_runtime_lists_available_runtimes(env, capsys):
+    env.delenv("RUNTIME")
+    msg = _refused(capsys)
+    assert "runtime" in msg
+    assert "available: claude, omp, opencode" in msg
+
+
+def test_malformed_list_setting_exits_without_echoing_value(env, capsys):
+    env.setenv("ENV_PASSTHROUGH", "SECRET-LOOKING-VALUE")
+    msg = _refused(capsys)
+    assert "env_passthrough" in msg
+    assert "SECRET-LOOKING-VALUE" not in msg
+
+
+def test_bad_runtime_args_exits_without_echoing_value(env, capsys):
+    env.setenv("RUNTIME_ARGS", "--token=SECRET-LOOKING-VALUE")
+    msg = _refused(capsys)
+    assert "runtime_args" in msg
+    assert "SECRET-LOOKING-VALUE" not in msg
+
+
+def test_malformed_toml_exits_without_retry(env, tmp_path, capsys):
+    cfg = tmp_path / "bad.toml"
+    cfg.write_text('model = "SECRET-LOOKING-VALUE\n')
+    env.setenv("ADAPTER_CONFIG", str(cfg))
+    msg = _refused(capsys)
+    assert "toml" in msg.lower()
+    assert "SECRET-LOOKING-VALUE" not in msg
 
 
 def test_runtime_crash_after_valid_config_is_still_retried(env, tmp_path):

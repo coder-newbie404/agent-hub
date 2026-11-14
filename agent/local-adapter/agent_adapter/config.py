@@ -95,16 +95,23 @@ class Settings(BaseSettings):
 
 
 def legacy_path_error(settings) -> str | None:
-    """Refuse to start when an old omp-adapter data dir exists and the new
-    default location does not: the journal is the source of truth and must
-    not be orphaned silently. Only applies to the derived default location."""
+    """Refuse to start an omp instance when an old omp-adapter data dir
+    exists and the new default location has no journal: the journal is the
+    source of truth and must not be orphaned silently. Keyed on the journal,
+    not the directory, so an empty dir created by a side effect never
+    bypasses it. Only applies to the derived default location, and only to
+    omp (the legacy data belongs to the omp adapter)."""
+    if settings.runtime != "omp":
+        return None
     legacy = pathlib.Path("~/.omp-adapter").expanduser()
     if not settings.journal_dir.startswith("~/.agent-adapter/"):
         return None
-    target = pathlib.Path(settings.journal_dir).expanduser().parent
-    if legacy.exists() and not target.exists():
-        return (f"found legacy adapter data in {legacy} but {target} does not "
-                f"exist. To keep that journal for agent '{settings.agent_id}': "
-                f"mkdir -p ~/.agent-adapter && mv ~/.omp-adapter {target}  "
+    journal = pathlib.Path(settings.journal_dir).expanduser()
+    if legacy.exists() and not journal.exists():
+        target = journal.parent
+        return (f"found legacy adapter data in {legacy} but {journal} does "
+                f"not exist. To keep that journal for agent "
+                f"'{settings.agent_id}': mkdir -p ~/.agent-adapter && "
+                f"mv ~/.omp-adapter {target}  "
                 f"(or delete/rename ~/.omp-adapter to start fresh)")
     return None
