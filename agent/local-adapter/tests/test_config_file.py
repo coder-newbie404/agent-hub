@@ -1,7 +1,7 @@
 """Component config file (adapter.config.toml) vs env precedence."""
 import os
 
-from omp_adapter.config import Settings
+from agent_adapter.config import Settings
 
 
 def _settings(tmp_path, toml: str, **env) -> Settings:

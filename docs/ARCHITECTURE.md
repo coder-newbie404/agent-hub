@@ -23,7 +23,7 @@ flowchart LR
 | `hub/manager` | container (`manager`) | Hub REST API (`/health`, `/agents`, `/sessions*`, `/tokens*`, `/sync/nudge`), UI event channel at `/ws/ui`, agent WebSocket at `/ws/agent`, sync coordinator, session projection |
 | `hub/caddy/` | container (`caddy`) | TLS on :443, reverse-proxies everything (incl. `/ws/agent`) to manager:8000 |
 | `frontend/discord` | container (`discord`) | Discord frontend: slash commands, thread↔session mapping, run cards, missed-message rendering. Consumes hub REST + `/ws/ui`; owns no DB |
-| `agent/local-adapter/omp_adapter` | local machine, systemd user unit | Registers as agent `omp-local`, spawns/cancels `omp` runs, owns the append-only journal, runs the sync loop. Never listens on a port |
+| `agent/local-adapter/agent_adapter` | local machine, systemd user unit | Registers as agent `omp-local`, spawns/cancels `omp` runs, owns the append-only journal, runs the sync loop. Never listens on a port |
 | `omp` | local machine | The agent runtime (`--mode=json` event stream; per-line size aligned with uvicorn's 64 MiB `--ws-max-size`) |
 
 ## Tech stack

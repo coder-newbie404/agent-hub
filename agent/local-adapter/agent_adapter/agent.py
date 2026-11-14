@@ -9,12 +9,12 @@ import asyncio
 import logging
 import pathlib
 
-from omp_adapter.protocol import (Envelope, SESSION_CANCEL, SESSION_CANCEL_ACK,
+from agent_adapter.protocol import (Envelope, SESSION_CANCEL, SESSION_CANCEL_ACK,
                                   SESSION_CREATE, SESSION_FAILED,
                                   SESSION_MESSAGE, SESSION_WAITING,
                                   SESSIONS_SNAPSHOT, SYNC_ACK, SYNC_MESSAGES,
                                   SYNC_NEED, SYNC_NOW, SYNC_PUSH)
-from omp_adapter.runtime import SessionRuntime
+from agent_adapter.runtime import SessionRuntime
 
 logger = logging.getLogger(__name__)
 

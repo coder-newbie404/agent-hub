@@ -1,4 +1,4 @@
-"""Run-facing delegation CLI: `python -m omp_adapter.cli <op> [args]`.
+"""Run-facing delegation CLI: `python -m agent_adapter.cli <op> [args]`.
 
 A standalone process cannot await the daemon's WSS connection, so it
 writes a request file into the delegation drop box and polls for the
@@ -30,7 +30,7 @@ def main(argv=None):
     raises SystemExit(1) on timeout and SystemExit(2) when the broker
     reports an error payload.
     """
-    parser = argparse.ArgumentParser(prog="omp_adapter.cli")
+    parser = argparse.ArgumentParser(prog="agent_adapter.cli")
     # every op waits on the drop box, so every op waits with a deadline
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--timeout", type=float, default=600.0,

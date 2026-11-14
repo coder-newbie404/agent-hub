@@ -4,12 +4,12 @@ import time
 
 import websockets
 
-from omp_adapter.agent import AdapterAgent
-from omp_adapter.client import OMPClient
-from omp_adapter.config import Settings
+from agent_adapter.agent import AdapterAgent
+from agent_adapter.client import AdapterClient
+from agent_adapter.config import Settings
 
 logging.basicConfig(level=logging.INFO)  # reconnect attempts must be visible
-logger = logging.getLogger("omp_adapter")
+logger = logging.getLogger("agent_adapter")
 
 
 async def main() -> None:
@@ -25,7 +25,7 @@ async def main() -> None:
             pass
 
     agent = AdapterAgent(settings, send)
-    client = OMPClient(settings, agent)
+    client = AdapterClient(settings, agent)
     await client.run_forever()
 
 

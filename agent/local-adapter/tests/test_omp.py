@@ -3,7 +3,7 @@ import pathlib
 
 import pytest
 
-from omp_adapter.omp import OmpRunner, OmpRunError
+from agent_adapter.omp import OmpRunner, OmpRunError
 
 STUB = str(pathlib.Path(__file__).parent / "stub_omp.sh")
 

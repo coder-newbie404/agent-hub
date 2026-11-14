@@ -3,10 +3,10 @@ import asyncio
 import json
 import pathlib
 
-import omp_adapter.runtime as runtime_mod
-from omp_adapter.agent import AdapterAgent
-from omp_adapter.config import Settings
-from omp_adapter.protocol import Envelope
+import agent_adapter.runtime as runtime_mod
+from agent_adapter.agent import AdapterAgent
+from agent_adapter.config import Settings
+from agent_adapter.protocol import Envelope
 
 STUB = str(pathlib.Path(__file__).parent / "stub_omp.sh")
 

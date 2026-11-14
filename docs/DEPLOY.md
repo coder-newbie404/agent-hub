@@ -240,7 +240,7 @@ DB; the adapter's journal lives on its own machine).
   that doubles from 1 s up to its `reconnect_max` setting (default 30 s,
   `config/adapter.config.toml`), and resets after a successful connect;
   `agent/template` does the same capped at 30 s. Each failed attempt is
-  logged, so the adapter log (`journalctl --user -u omp-adapter -f` under
+  logged, so the adapter log (`journalctl --user -u agent-adapter@<name> -f` under
   systemd) shows why. An authorization error (revoked, expired, or rotated
   token) will keep retrying until `AGENT_TOKEN` is fixed.
 - **Anything else on the hub side**: `docker compose logs -f manager`.

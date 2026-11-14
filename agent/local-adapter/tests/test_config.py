@@ -2,7 +2,7 @@
 process env and .env must not leak into the asserted defaults)."""
 import os
 
-from omp_adapter.config import Settings
+from agent_adapter.config import Settings
 
 
 def _settings() -> Settings:

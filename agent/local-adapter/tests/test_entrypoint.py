@@ -1,7 +1,7 @@
 """The daemon supervisor must survive crashes and keep the agent online."""
 import asyncio
 
-import omp_adapter.__main__ as entry
+import agent_adapter.__main__ as entry
 
 
 def test_run_restarts_after_crash_and_exits_on_interrupt(monkeypatch):

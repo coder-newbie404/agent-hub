@@ -6,8 +6,8 @@ import time
 
 import pytest
 
-from omp_adapter.delegation import DropBox
-from omp_adapter import cli
+from agent_adapter.delegation import DropBox
+from agent_adapter import cli
 
 
 def _simulate_daemon(tmp_path, respond):

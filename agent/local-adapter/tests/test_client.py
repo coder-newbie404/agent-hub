@@ -3,9 +3,9 @@ import json
 
 import pytest
 
-from omp_adapter.client import OMPClient, next_backoff
-from omp_adapter.config import Settings
-from omp_adapter.protocol import (AGENT_REGISTER, DELEGATE_MESSAGE,
+from agent_adapter.client import AdapterClient, next_backoff
+from agent_adapter.config import Settings
+from agent_adapter.protocol import (AGENT_REGISTER, DELEGATE_MESSAGE,
                                   DELEGATION_RESULT, Envelope)
 
 
@@ -42,8 +42,8 @@ class FakeWS:
         return json.dumps(self._incoming.pop(0))
 
 
-def make_client() -> OMPClient:
-    return OMPClient(Settings(manager_url="wss://x", agent_token="t",
+def make_client() -> AdapterClient:
+    return AdapterClient(Settings(manager_url="wss://x", agent_token="t",
                               default_workspace="/tmp"), FakeAgent())
 
 
@@ -59,7 +59,7 @@ async def test_session_registers_connects_and_survives_disconnect():
     ws = FakeWS(incoming=[{"protocol_version": 1, "type": "session.create",
                            "request_id": "req_1", "session_id": "sess_1",
                            "payload": {}}])
-    client = OMPClient(settings, agent)
+    client = AdapterClient(settings, agent)
     await client.session(ws)  # exits when the fake socket closes
     assert ws.sent[0]["type"] == AGENT_REGISTER
     assert ws.sent[0]["payload"]["agent_id"] == settings.agent_id
@@ -86,7 +86,7 @@ async def test_session_propagates_handler_errors():
                            "request_id": "req_1", "session_id": "sess_1",
                            "payload": {}}])
     with pytest.raises(OSError):
-        await OMPClient(settings, agent).session(ws)
+        await AdapterClient(settings, agent).session(ws)
     assert agent.stopped is False
 
 

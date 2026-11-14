@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from omp_adapter.delegation import DelegationClient, DropBox
+from agent_adapter.delegation import DelegationClient, DropBox
 
 
 class FakeSettings:
@@ -12,7 +12,7 @@ class FakeSettings:
 
 
 class FakeChannel:
-    """Stands in for OMPClient: records calls, answers once."""
+    """Stands in for AdapterClient: records calls, answers once."""
 
     def __init__(self, reply=None):
         self.sent = []
@@ -56,7 +56,7 @@ async def test_rest_base_url_and_directory(monkeypatch):
             captured["url"] = url
             return FakeResp()
 
-    monkeypatch.setattr("omp_adapter.delegation.httpx.AsyncClient",
+    monkeypatch.setattr("agent_adapter.delegation.httpx.AsyncClient",
                         FakeAsyncClient)
     out = await dc.directory()
     assert out == [{"id": "agent-b"}]
@@ -114,7 +114,7 @@ async def test_sessions_for_filters_client_side(monkeypatch):
             captured["url"] = url
             return FakeResp()
 
-    monkeypatch.setattr("omp_adapter.delegation.httpx.AsyncClient",
+    monkeypatch.setattr("agent_adapter.delegation.httpx.AsyncClient",
                         FakeAsyncClient)
     out = await dc.sessions_for("agent-a")
     # the manager route ignores query params: no ?agent= on the wire
@@ -140,7 +140,7 @@ async def test_rest_non_2xx_reports_error_result(tmp_path, monkeypatch):
             return type("FakeResp", (), {"status_code": cases["status"],
                                          "text": cases["text"]})()
 
-    monkeypatch.setattr("omp_adapter.delegation.httpx.AsyncClient",
+    monkeypatch.setattr("agent_adapter.delegation.httpx.AsyncClient",
                         FakeAsyncClient)
     box = DropBox(str(tmp_path), dc)
     for name, code, text in [("req-d", 500, "boom"), ("req-r", 302, "")]:

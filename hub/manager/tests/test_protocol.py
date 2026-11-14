@@ -40,7 +40,7 @@ def test_sync_types_mirrored_in_adapter():
         if root == root.parent:
             raise AssertionError("repo root with agent/local-adapter not found")
         root = root.parent
-    adapter = (root / "agent" / "local-adapter" / "omp_adapter" / "protocol.py").read_text()
+    adapter = (root / "agent" / "local-adapter" / "agent_adapter" / "protocol.py").read_text()
     from app import protocol as mgr
     for name in ("SYNC_PUSH", "SYNC_ACK", "SYNC_NOW", "SYNC_NEED",
                  "SYNC_MESSAGES"):

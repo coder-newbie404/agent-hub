@@ -40,13 +40,13 @@ stream size limit) with inline comments.
 cd agent/local-adapter
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/python -m omp_adapter
+.venv/bin/python -m agent_adapter
 ```
 
 There is no packaged console script yet (no `pyproject.toml`), so `python -m
-omp_adapter` from this directory is the canonical way to run it. If you add a
+agent_adapter` from this directory is the canonical way to run it. If you add a
 `pyproject.toml` with a console entry point, `pipx install -e .` gives you
-`~/.local/bin/omp-adapter` instead.
+`~/.local/bin/agent-adapter` instead.
 
 TLS depends on how the hub is deployed: a DNS-named hub with a Let's
 Encrypt cert works with the default system trust store; a bare-IP hub uses
@@ -58,16 +58,16 @@ A running `omp` process (or any script) can reach the manager through the
 adapter without handling tokens: the CLI writes a request file into the
 delegation drop box and waits for the daemon's answer. The daemon must be
 running with `delegation_enabled = true` — that is the code default
-(`omp_adapter/config.py`); override it in `config/adapter.config.toml` or
+(`agent_adapter/config.py`); override it in `config/adapter.config.toml` or
 with the `DELEGATION_ENABLED` env var.
 
 ```bash
 cd agent/local-adapter
-.venv/bin/python -m omp_adapter.cli agents
-.venv/bin/python -m omp_adapter.cli sessions --agent <agent_id>
-.venv/bin/python -m omp_adapter.cli create --agent <agent_id> --description "..."
-.venv/bin/python -m omp_adapter.cli grant --session <session_id> --agent <agent_id> --level read   # or write
-.venv/bin/python -m omp_adapter.cli ask --session <session_id> --text "..." --hop 0 --timeout 600
+.venv/bin/python -m agent_adapter.cli agents
+.venv/bin/python -m agent_adapter.cli sessions --agent <agent_id>
+.venv/bin/python -m agent_adapter.cli create --agent <agent_id> --description "..."
+.venv/bin/python -m agent_adapter.cli grant --session <session_id> --agent <agent_id> --level read   # or write
+.venv/bin/python -m agent_adapter.cli ask --session <session_id> --text "..." --hop 0 --timeout 600
 ```
 
 Every command accepts `--timeout S` (default 600) for how long to wait,
@@ -91,9 +91,9 @@ session on another online agent, a two-round `ask` (first answer
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cp systemd/omp-adapter.service ~/.config/systemd/user/
+cp systemd/agent-adapter@.service ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now omp-adapter
+systemctl --user enable --now agent-adapter@<name>
 loginctl enable-linger $USER   # keep it running after logout
 ```
 
@@ -108,10 +108,18 @@ Hardening: the adapter `.env` holds `AGENT_TOKEN`, so `chmod 600 .env`. Also set
 Operate it with:
 
 ```bash
-journalctl --user -u omp-adapter -f
-systemctl --user restart omp-adapter
-systemctl --user stop omp-adapter
+journalctl --user -u agent-adapter@<name> -f
+systemctl --user restart agent-adapter@<name>
+systemctl --user stop agent-adapter@<name>
 ```
+
+### Migrating from omp-adapter
+
+Earlier versions shipped the unit as `omp-adapter.service` and the package as
+`omp_adapter`. The unit is now the template `agent-adapter@.service` (instance
+name `<name>`) and the module is run as `python -m agent_adapter`. To migrate:
+`systemctl --user disable --now omp-adapter`, remove the old unit file from
+`~/.config/systemd/user/`, copy the new one, and enable `agent-adapter@<name>`.
 
 ## Tests
 

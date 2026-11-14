@@ -64,7 +64,7 @@ must dial the local machine directly, and prefer tunnels over port-forwarding.
 
 | Control | Where | Detail |
 |---|---|---|
-| Outbound-only adapter | `omp_adapter/client.py` | No listening port on the local machine; unreachable inbound by design |
+| Outbound-only adapter | `agent_adapter/client.py` | No listening port on the local machine; unreachable inbound by design |
 | Per-agent tokens on WSS | `hub/manager` (`tokens.py`) | sha-256-hashed at rest, pinned to one `agent_id`, TTL (default 30 d), rotation revokes old secrets, revocation drops the live connection |
 | Bootstrap token | `ADMIN_TOKEN` env | Wildcard WS + admin REST; re-seeded from env at every boot. It stays: it is the Discord frontend's credential (`/ws/ui` accepts only this admin row). Agents and adapters should use per-agent tokens, not this one |
 | REST agent ACL | `hub/manager` (`routes.py`) | `require_agent` on `/agents*`, session create/list/get, grants, messages, run, cancel: a per-agent token acts as its pinned `agent_id` and is checked against the session ACL (hosting agent, creator, explicit grants); the admin token acts with no restriction |

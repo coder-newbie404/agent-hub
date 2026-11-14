@@ -17,8 +17,8 @@ import uuid
 from collections import deque
 from datetime import datetime, timezone
 
-from omp_adapter.omp import OmpRunner
-from omp_adapter.protocol import (AGENT_MESSAGE, Envelope, SESSION_ACTIVITY,
+from agent_adapter.omp import OmpRunner
+from agent_adapter.protocol import (AGENT_MESSAGE, Envelope, SESSION_ACTIVITY,
                                   SESSION_COMPLETED, SESSION_DELTA,
                                   SESSION_FAILED, SESSION_WAITING)
 

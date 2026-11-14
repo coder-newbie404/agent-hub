@@ -10,7 +10,7 @@ import pathlib
 
 import httpx
 
-from omp_adapter.protocol import DELEGATE_MESSAGE, Envelope, new_id
+from agent_adapter.protocol import DELEGATE_MESSAGE, Envelope, new_id
 
 logger = logging.getLogger(__name__)
 

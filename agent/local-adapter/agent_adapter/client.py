@@ -4,8 +4,8 @@ import logging
 
 import websockets
 
-from omp_adapter.protocol import AGENT_HEARTBEAT, AGENT_REGISTER, Envelope, PROTO
-from omp_adapter.delegation import DelegationClient, DropBox
+from agent_adapter.protocol import AGENT_HEARTBEAT, AGENT_REGISTER, Envelope, PROTO
+from agent_adapter.delegation import DelegationClient, DropBox
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ def _safe_json(raw: str, default):
         return default
 
 
-class OMPClient:
+class AdapterClient:
     def __init__(self, settings, agent):
         self.settings = settings
         self.agent = agent

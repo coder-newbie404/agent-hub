@@ -23,7 +23,7 @@ its runtime in a new process group via `preexec_fn` / `os.killpg`, and the
 docs assume `.venv/bin` paths. It needs an `omp` binary on `PATH`, or
 `OMP_BIN` (in the adapter's `.env`) pointing at any CLI that accepts the same invocation
 (`<bin> --mode=json --cwd <dir> [-r <id>] -p <text>`, see
-`agent/local-adapter/omp_adapter/omp.py`).
+`agent/local-adapter/agent_adapter/omp.py`).
 
 1. Start the hub:
 
@@ -49,7 +49,7 @@ docs assume `.venv/bin` paths. It needs an `omp` binary on `PATH`, or
                                # AGENT_TOKEN=<ADMIN_TOKEN value for now; print it with:
                                #   grep '^ADMIN_TOKEN=' ../../.env | cut -d= -f2>
                                # DEFAULT_WORKSPACE=<dir the agent may use>
-   .venv/bin/python -m omp_adapter
+   .venv/bin/python -m agent_adapter
    ```
 
 3. Verify the fleet (from the repo root, in a second terminal — the adapter

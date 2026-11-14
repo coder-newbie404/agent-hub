@@ -6,10 +6,10 @@ import json
 import pathlib
 import subprocess
 
-import omp_adapter.runtime as runtime_mod
-from omp_adapter.config import Settings
-from omp_adapter.runtime import SessionRuntime
-from omp_adapter.protocol import Envelope
+import agent_adapter.runtime as runtime_mod
+from agent_adapter.config import Settings
+from agent_adapter.runtime import SessionRuntime
+from agent_adapter.protocol import Envelope
 
 STUB = str(pathlib.Path(__file__).parent / "stub_omp.sh")
 
@@ -226,7 +226,7 @@ async def test_replay_preserves_hub_cursor_across_upserts(tmp_path):
     assert rt2._state["s1"]["hub_last_msg"] == 5
 
 async def test_titled_folds_and_survives_reupsert(tmp_path):
-    import omp_adapter.runtime as rmod
+    import agent_adapter.runtime as rmod
     j = rmod.SessionJournal(str(tmp_path / "journal"))
     j.session_upserted("s1", "omp-1", "/w", "idle")
     j.titled("s1", "Fix login flow")
