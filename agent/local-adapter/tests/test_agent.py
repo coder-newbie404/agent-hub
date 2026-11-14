@@ -111,6 +111,15 @@ async def test_cancel_kills_run_and_acks(tmp_path):
             break
         await asyncio.sleep(0.01)
     assert send.envs[-1].payload == {"state": "running"}
+    # "running" is sent before the child exists; cancelling before the spawn
+    # is a no-op and the 10s stub would outlive the test (a race the full
+    # suite exposes). Wait until the runner has actually spawned.
+    for _ in range(1000):
+        runner = agent.runtime._runners.get("sess_1")
+        if runner is not None and runner.pid is not None:
+            break
+        await asyncio.sleep(0.01)
+    assert runner is not None and runner.pid is not None
     await agent.handle(Envelope(type="session.cancel", request_id="r3",
                                 session_id="sess_1", payload={}))
     await asyncio.sleep(0.3)  # let the cancelled task emit session.failed
