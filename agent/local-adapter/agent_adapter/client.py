@@ -4,8 +4,10 @@ import logging
 
 import websockets
 
-from agent_adapter.protocol import AGENT_HEARTBEAT, AGENT_REGISTER, Envelope, PROTO
+from agent_adapter.protocol import (AGENT_HEARTBEAT, AGENT_REGISTER, Envelope,
+                                    PROTO)
 from agent_adapter.delegation import DelegationClient, DropBox
+from agent_adapter.runtimes import get_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +53,11 @@ class AdapterClient:
 
     async def session(self, ws) -> None:
         self.ws = ws
+        spec = get_runtime(self.settings.runtime)
+        capabilities = ["chat", "cancel"]
+        if spec.streaming:
+            capabilities.append("streaming")
+        capabilities += ["activity", "owns_sessions"]
         await ws.send(json.dumps({
             "protocol_version": PROTO, "type": AGENT_REGISTER,
             "payload": {"agent_id": self.settings.agent_id,
@@ -59,8 +66,7 @@ class AdapterClient:
                         "tools": _safe_json(self.settings.agent_tools, []),
                         "environment": _safe_json(
                             self.settings.agent_environment, {}),
-                        "capabilities": ["chat", "cancel", "streaming",
-                                         "activity", "owns_sessions"]}}))
+                        "capabilities": capabilities}}))
         # projection mode: replay/recover once, then publish a snapshot on
         # every (re)connect so the hub reconciles
         await self.agent.on_connect()

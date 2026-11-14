@@ -10,15 +10,35 @@ import agent_adapter.runtime as runtime_mod
 from agent_adapter.config import Settings
 from agent_adapter.runtime import SessionRuntime
 from agent_adapter.protocol import Envelope
+from agent_adapter.runtimes.base import Activity, Delta, RunResult
 
-STUB = str(pathlib.Path(__file__).parent / "stub_omp.sh")
+STUB = str(pathlib.Path(__file__).parent / "stubs" / "stub_omp.sh")
+
+
+class FakeSpec:
+    """RuntimeSpec stand-in whose runner is built by `runner_cls`."""
+    name = "omp"
+    streaming = True
+    policies = frozenset({"default"})
+    titles = None
+
+    def __init__(self, runner_cls):
+        self.make_runner = lambda settings: runner_cls()
+
+
+def use_runner(monkeypatch, runner_cls):
+    monkeypatch.setattr(runtime_mod, "get_runtime",
+                        lambda name: FakeSpec(runner_cls))
 
 
 def make_settings(tmp_path, **kw):
+    kw = {"allow_payload_env": True, **kw}
     return Settings(manager_url="wss://x", agent_token="t",
-                    default_workspace=str(tmp_path), omp_bin=STUB,
+                    default_workspace=str(tmp_path), runtime="omp",
+                    runtime_bin=STUB,
                     state_file=str(tmp_path / "state.json"),
                     journal_dir=str(tmp_path / "journal"), **kw)
+
 
 class Recorder:
     def __init__(self):
@@ -92,18 +112,17 @@ async def test_duplicate_request_never_respawns(tmp_path, monkeypatch):
     calls = []
 
     class InstantRunner:
-        def __init__(self, *a, **k):
-            pass
+        pid = None
+        last_stderr_tail = ""
 
-        async def run(self, workspace, omp_session_id, text, env=None,
-                      on_event=None, on_spawn=None):
-            calls.append((workspace, omp_session_id))
-            return "omp-1", "ok"
+        async def run(self, req, emit, on_spawn=None):
+            calls.append((req.workspace, req.resume_id))
+            return RunResult("omp-1", "ok")
 
         async def cancel(self):
             pass
 
-    monkeypatch.setattr(runtime_mod, "OmpRunner", InstantRunner)
+    use_runner(monkeypatch, InstantRunner)
     send = Recorder()
     rt = SessionRuntime(make_settings(tmp_path), send)
     await rt.start()
@@ -125,18 +144,17 @@ async def test_cancel_states(tmp_path, monkeypatch):
     release = asyncio.Event()
 
     class BlockedRunner:
-        def __init__(self, *a, **k):
-            pass
+        pid = None
+        last_stderr_tail = ""
 
-        async def run(self, workspace, omp_session_id, text, env=None,
-                      on_event=None, on_spawn=None):
+        async def run(self, req, emit, on_spawn=None):
             started.set()
             await release.wait()
-            return "omp-1", "ok"
+            return RunResult("omp-1", "ok")
 
         async def cancel(self):
             release.set()
-    monkeypatch.setattr(runtime_mod, "OmpRunner", BlockedRunner)
+    use_runner(monkeypatch, BlockedRunner)
 
     send = Recorder()
     rt = SessionRuntime(make_settings(tmp_path), send)
@@ -257,3 +275,135 @@ async def test_refresh_titles_journals_changes(tmp_path):
     rt2 = SessionRuntime(make_settings(
         tmp_path, omp_titles_db=str(tmp_path / "nope.db")), Recorder())
     assert rt2.refresh_titles() == 0
+
+
+class CapturingRunner:
+    """Records each RunRequest; returns a fixed native id."""
+    reqs: list = []
+    pid = None
+    last_stderr_tail = ""
+
+    async def run(self, req, emit, on_spawn=None):
+        CapturingRunner.reqs.append(req)
+        return RunResult("new-id", "ok")
+
+    async def cancel(self):
+        pass
+
+
+async def _run_once(rt, sid="s1", env=None):
+    assert rt.begin_run(sid, "hi", "req-1", env) == "started"
+    await asyncio.wait_for(rt._active[sid], 5)
+
+
+async def test_legacy_journal_entry_without_rt_resumes_as_omp(tmp_path,
+                                                              monkeypatch):
+    use_runner(monkeypatch, CapturingRunner)
+    CapturingRunner.reqs = []
+    rt = SessionRuntime(make_settings(tmp_path), Recorder())
+    rt.journal.session_upserted("s1", "old-id", "ws-a", "idle")  # no rt
+    replayed = SessionRuntime(make_settings(tmp_path), Recorder())
+    await replayed.start()
+    await _run_once(replayed)
+    assert [(r.workspace, r.resume_id) for r in CapturingRunner.reqs] == [
+        ("ws-a", "old-id")]
+
+
+async def test_session_of_another_runtime_starts_fresh(tmp_path, monkeypatch,
+                                                       caplog):
+    use_runner(monkeypatch, CapturingRunner)
+    CapturingRunner.reqs = []
+    rt = SessionRuntime(make_settings(tmp_path), Recorder())
+    rt.journal.session_upserted("s1", "c-id", "ws-a", "idle", rt="claude")
+    replayed = SessionRuntime(make_settings(tmp_path), Recorder())
+    await replayed.start()
+    with caplog.at_level("WARNING", logger="agent_adapter.runtime"):
+        await _run_once(replayed)
+    assert [(r.workspace, r.resume_id) for r in CapturingRunner.reqs] == [
+        ("ws-a", None)]
+    assert "claude" in caplog.text and "c-id" in caplog.text
+    # the fresh native session replaces the foreign one and is tagged omp
+    assert replayed._state["s1"]["omp"] == "new-id"
+    assert replayed._state["s1"]["rt"] == "omp"
+
+
+async def test_run_journals_runtime_tag(tmp_path, monkeypatch):
+    use_runner(monkeypatch, CapturingRunner)
+    CapturingRunner.reqs = []
+    rt = SessionRuntime(make_settings(tmp_path), Recorder())
+    await rt.start()
+    rt.upsert_session("s1", "ws-a")
+    await _run_once(rt)
+    evs, _ = rt.journal.read_from(0, 50)
+    upserts = [e for e in evs if e.get("kind") == "session_upserted"]
+    assert upserts[-1]["omp"] == "new-id" and upserts[-1]["rt"] == "omp"
+    # and the tag survives a restart
+    replayed = SessionRuntime(make_settings(tmp_path), Recorder())
+    await replayed.start()
+    assert replayed._state["s1"]["rt"] == "omp"
+
+
+async def test_payload_env_reaches_runner_only_when_allowed(tmp_path,
+                                                            monkeypatch):
+    use_runner(monkeypatch, CapturingRunner)
+    CapturingRunner.reqs = []
+    for allow in (False, True):
+        rt = SessionRuntime(
+            make_settings(tmp_path / f"a{allow}", allow_payload_env=allow),
+            Recorder())
+        await rt.start()
+        rt.upsert_session("s1", "ws-a")
+        await _run_once(rt, env={"STUB_DELAY": "1"})
+    assert [dict(r.env) for r in CapturingRunner.reqs] == [
+        {}, {"STUB_DELAY": "1"}]
+
+
+async def test_failed_stream_send_does_not_fail_the_run(tmp_path,
+                                                        monkeypatch):
+    class ChattyRunner(CapturingRunner):
+        async def run(self, req, emit, on_spawn=None):
+            await emit(Delta("x"))
+            await emit(Activity("think"))
+            return RunResult("new-id", "ok")
+
+    use_runner(monkeypatch, ChattyRunner)
+    envs = []
+
+    async def flaky(env):
+        if env.type in ("session.delta", "session.activity"):
+            raise ConnectionError("hub gone")
+        envs.append(env)
+
+    rt = SessionRuntime(make_settings(tmp_path), flaky)
+    await rt.start()
+    rt.upsert_session("s1", "ws-a")
+    await _run_once(rt)
+    assert [e.type for e in envs][-2:] == ["agent.message",
+                                           "session.completed"]
+
+
+async def test_refresh_titles_skips_other_runtimes_and_untitled_runtimes(
+        tmp_path, monkeypatch):
+    import sqlite3
+    db = tmp_path / "history.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE session_titles (session_id TEXT, title TEXT, "
+                "updated_at INTEGER)")
+    con.execute("INSERT INTO session_titles VALUES ('c-id', 'Foreign', 1)")
+    con.commit()
+    con.close()
+    rt = SessionRuntime(make_settings(tmp_path, omp_titles_db=str(db)),
+                        Recorder())
+    rt.journal.session_upserted("s1", "c-id", "/w", "idle", rt="claude")
+    await rt.start()
+    # the id sits in omp's store, but the session belongs to another runtime
+    assert rt.refresh_titles() == 0
+    assert "title" not in rt._state["s1"]
+
+    monkeypatch.setattr(runtime_mod, "get_runtime",
+                        lambda name: FakeSpec(CapturingRunner))
+    rt2 = SessionRuntime(make_settings(tmp_path, omp_titles_db=str(db)),
+                         Recorder())
+    rt2._state["s2"] = {"omp": "c-id", "rt": "omp", "ws": "/w",
+                        "status": "idle"}
+    assert rt2.refresh_titles() == 0  # FakeSpec has titles=None

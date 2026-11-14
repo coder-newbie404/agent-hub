@@ -18,11 +18,6 @@ import time
 import uuid
 
 
-def _dropbox_dir() -> str:
-    # Matches Settings.delegation_dir (config.py); env override identical.
-    return os.environ.get("DELEGATION_DIR", "~/.omp-adapter/delegations")
-
-
 def main(argv=None):
     """Submit one request to the drop box and wait for the result.
 
@@ -35,6 +30,9 @@ def main(argv=None):
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--timeout", type=float, default=600.0,
                         help="seconds to wait for the result file")
+    common.add_argument("--dir", default=None,
+                        help="drop box directory (default: "
+                             "$ADAPTER_DELEGATION_DIR)")
     sub = parser.add_subparsers(dest="op", required=True)
     sub.add_parser("agents", parents=[common])
     p = sub.add_parser("sessions", parents=[common])
@@ -64,7 +62,12 @@ def main(argv=None):
         request.update(session_id=args.session, text=args.text,
                        hop=args.hop)
 
-    box = pathlib.Path(_dropbox_dir()).expanduser()
+    directory = args.dir or os.environ.get("ADAPTER_DELEGATION_DIR")
+    if not directory:
+        raise SystemExit("set ADAPTER_DELEGATION_DIR or pass --dir (the "
+                         "adapter exports it to agent processes "
+                         "automatically)")
+    box = pathlib.Path(directory).expanduser()
     box.mkdir(parents=True, exist_ok=True)
     name = f"req-{uuid.uuid4().hex[:12]}"
     req_path = box / f"{name}.json"

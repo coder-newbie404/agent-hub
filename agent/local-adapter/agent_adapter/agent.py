@@ -9,11 +9,12 @@ import asyncio
 import logging
 import pathlib
 
-from agent_adapter.protocol import (Envelope, SESSION_CANCEL, SESSION_CANCEL_ACK,
-                                  SESSION_CREATE, SESSION_FAILED,
-                                  SESSION_MESSAGE, SESSION_WAITING,
-                                  SESSIONS_SNAPSHOT, SYNC_ACK, SYNC_MESSAGES,
-                                  SYNC_NEED, SYNC_NOW, SYNC_PUSH)
+from agent_adapter.protocol import (Envelope, SESSION_CANCEL,
+                                    SESSION_CANCEL_ACK, SESSION_CREATE,
+                                    SESSION_FAILED, SESSION_MESSAGE,
+                                    SESSION_WAITING, SESSIONS_SNAPSHOT,
+                                    SYNC_ACK, SYNC_MESSAGES, SYNC_NEED,
+                                    SYNC_NOW, SYNC_PUSH)
 from agent_adapter.runtime import SessionRuntime
 
 logger = logging.getLogger(__name__)
@@ -169,7 +170,7 @@ class AdapterAgent:
             # journal keys them by the hub-shared local id: resolve through
             # the omp index before treating the id as unknown
             local = lid if lid in self.runtime._state \
-                else self.runtime.local_for_omp(lid)
+                else self.runtime.local_for_native(lid)
             if local is None:
                 # truly unknown: adopt so the mirror pull has a target
                 self.runtime.upsert_session(lid)

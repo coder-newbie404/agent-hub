@@ -6,7 +6,7 @@ import pytest
 from agent_adapter.client import AdapterClient, next_backoff
 from agent_adapter.config import Settings
 from agent_adapter.protocol import (AGENT_REGISTER, DELEGATE_MESSAGE,
-                                  DELEGATION_RESULT, Envelope)
+                                    DELEGATION_RESULT, Envelope)
 
 
 class FakeAgent:
@@ -44,7 +44,8 @@ class FakeWS:
 
 def make_client() -> AdapterClient:
     return AdapterClient(Settings(manager_url="wss://x", agent_token="t",
-                              default_workspace="/tmp"), FakeAgent())
+                                  default_workspace="/tmp", runtime="omp"),
+                         FakeAgent())
 
 
 def test_backoff_sequence_capped():
@@ -54,7 +55,7 @@ def test_backoff_sequence_capped():
 
 async def test_session_registers_connects_and_survives_disconnect():
     settings = Settings(manager_url="wss://x", agent_token="t",
-                        default_workspace="/tmp")
+                        default_workspace="/tmp", runtime="omp")
     agent = FakeAgent()
     ws = FakeWS(incoming=[{"protocol_version": 1, "type": "session.create",
                            "request_id": "req_1", "session_id": "sess_1",
@@ -64,12 +65,26 @@ async def test_session_registers_connects_and_survives_disconnect():
     assert ws.sent[0]["type"] == AGENT_REGISTER
     assert ws.sent[0]["payload"]["agent_id"] == settings.agent_id
     # projection mode: the hub must know this adapter owns its sessions
-    assert "owns_sessions" in ws.sent[0]["payload"]["capabilities"]
+    assert ws.sent[0]["payload"]["capabilities"] == [
+        "chat", "cancel", "streaming", "activity", "owns_sessions"]
     assert agent.connects == 1
     assert agent.handled[0].type == "session.create"
     # locally-owned runs survive hub disconnects; the reconnect snapshot
     # reconciles the hub projection
     assert agent.stopped is False
+
+
+async def test_register_omits_streaming_for_non_streaming_runtime(
+        monkeypatch):
+    import agent_adapter.client as client_mod
+    from agent_adapter.runtimes import get_runtime
+    from dataclasses import replace
+    spec = replace(get_runtime("omp"), streaming=False)
+    monkeypatch.setattr(client_mod, "get_runtime", lambda name: spec)
+    ws = FakeWS()
+    await make_client().session(ws)
+    assert ws.sent[0]["payload"]["capabilities"] == [
+        "chat", "cancel", "activity", "owns_sessions"]
 
 
 class ExplodingAgent(FakeAgent):
@@ -80,7 +95,7 @@ class ExplodingAgent(FakeAgent):
 
 async def test_session_propagates_handler_errors():
     settings = Settings(manager_url="wss://x", agent_token="t",
-                        default_workspace="/tmp")
+                        default_workspace="/tmp", runtime="omp")
     agent = ExplodingAgent()
     ws = FakeWS(incoming=[{"protocol_version": 1, "type": "session.create",
                            "request_id": "req_1", "session_id": "sess_1",

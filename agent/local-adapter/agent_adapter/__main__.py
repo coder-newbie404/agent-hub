@@ -6,7 +6,7 @@ import websockets
 
 from agent_adapter.agent import AdapterAgent
 from agent_adapter.client import AdapterClient
-from agent_adapter.config import Settings
+from agent_adapter.config import Settings, legacy_path_error
 
 logging.basicConfig(level=logging.INFO)  # reconnect attempts must be visible
 logger = logging.getLogger("agent_adapter")
@@ -14,6 +14,9 @@ logger = logging.getLogger("agent_adapter")
 
 async def main() -> None:
     settings = Settings()
+    msg = legacy_path_error(settings)
+    if msg:
+        raise SystemExit(msg)
 
     async def send(env) -> None:
         ws = client.ws
@@ -33,11 +36,11 @@ def run() -> None:
     """Daemon supervisor: run_forever is already retry-safe; this catches
     anything that would still kill the interpreter (env-level teardown,
     asyncio internals) so a WSL/PTY hiccup can't take the agent offline.
-    Ctrl+C stays a clean exit."""
+    Ctrl+C and a deliberate SystemExit (config refusal) stay clean exits."""
     while True:
         try:
             asyncio.run(main())
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, SystemExit):
             raise
         except BaseException:
             logger.exception("adapter crashed; restarting in 5s")

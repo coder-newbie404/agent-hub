@@ -1,27 +1,53 @@
 """Bridge tests: hub envelopes → SessionRuntime calls → envelopes out."""
 import asyncio
 import json
+import os
 import pathlib
+
+import pytest
 
 import agent_adapter.runtime as runtime_mod
 from agent_adapter.agent import AdapterAgent
 from agent_adapter.config import Settings
 from agent_adapter.protocol import Envelope
+from agent_adapter.runtimes.base import Activity, Delta, RunResult
 
-STUB = str(pathlib.Path(__file__).parent / "stub_omp.sh")
+STUB = str(pathlib.Path(__file__).parent / "stubs" / "stub_omp.sh")
+
+
+class FakeSpec:
+    """RuntimeSpec stand-in whose runner is built by `runner_cls`."""
+    name = "omp"
+    streaming = True
+    policies = frozenset({"default"})
+    titles = None
+
+    def __init__(self, runner_cls):
+        self.make_runner = lambda settings: runner_cls()
+
+
+def use_runner(monkeypatch, runner_cls):
+    monkeypatch.setattr(runtime_mod, "get_runtime",
+                        lambda name: FakeSpec(runner_cls))
+
+
+async def wait_until(predicate, timeout=10.0):
+    """Poll until `predicate()` is true; fail loudly instead of hanging."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not predicate():
+        assert asyncio.get_running_loop().time() < deadline, "timed out"
+        await asyncio.sleep(0.01)
 
 
 class RecordingRunner:
-    """OmpRunner stand-in recording (workspace, omp_session_id) per run."""
+    """Runner stand-in recording (workspace, resume_id) per run."""
     calls: list = []
+    pid = None
+    last_stderr_tail = ""
 
-    def __init__(self, omp_bin, stream_limit=None):
-        pass
-
-    async def run(self, workspace, omp_session_id, text, env=None,
-                  on_event=None, on_spawn=None):
-        RecordingRunner.calls.append((workspace, omp_session_id))
-        return "stub-session-2", "ok"
+    async def run(self, req, emit, on_spawn=None):
+        RecordingRunner.calls.append((req.workspace, req.resume_id))
+        return RunResult("stub-session-2", "ok")
 
     async def cancel(self):
         pass
@@ -29,9 +55,11 @@ class RecordingRunner:
 
 def make_settings(tmp_path, **kw):
     return Settings(manager_url="wss://x", agent_token="t",
-                    default_workspace=str(tmp_path), omp_bin=STUB,
+                    default_workspace=str(tmp_path), runtime="omp",
+                    runtime_bin=STUB, allow_payload_env=True,
                     state_file=str(tmp_path / "state.json"),
                     journal_dir=str(tmp_path / "journal"), **kw)
+
 
 class Recorder:
     def __init__(self):
@@ -73,8 +101,9 @@ async def test_message_run_completes_and_persists_state(tmp_path):
     msg = send.envs[send.types().index("agent.message")]
     assert msg.payload == {"text": "stub reply"}
     done = send.envs[send.types().index("session.completed")]
-    assert done.payload == {"omp_session_id": "stub-session-1"}
-    assert agent.runtime._state["sess_1"] == {"omp": "stub-session-1",
+    assert done.payload == {"omp_session_id": "stub-omp-1"}
+    assert agent.runtime._state["sess_1"] == {"omp": "stub-omp-1",
+                                              "rt": "omp",
                                               "ws": str(tmp_path),
                                               "status": "idle"}
 
@@ -87,7 +116,7 @@ async def test_second_message_while_running_is_busy(tmp_path):
                                 payload={"workspace": str(tmp_path)}))
     await agent.handle(Envelope(type="session.message", request_id="r2",
                                 session_id="sess_1",
-                                payload={"text": "slow", "env": {"OMP_STUB_DELAY": "10"}}))
+                                payload={"text": "slow", "env": {"STUB_DELAY": "10"}}))
     await agent.handle(Envelope(type="session.message", request_id="r3",
                                 session_id="sess_1", payload={"text": "again"}))
     assert send.envs[-1].type == "session.failed"
@@ -103,32 +132,27 @@ async def test_cancel_kills_run_and_acks(tmp_path):
                                 payload={"workspace": str(tmp_path)}))
     await agent.handle(Envelope(type="session.message", request_id="r2",
                                 session_id="sess_1",
-                                payload={"text": "slow", "env": {"OMP_STUB_DELAY": "10"}}))
-    # Cancel only makes sense once the run task actually started; wait for its
-    # waiting{running} envelope (bounded so a broken run fails fast).
-    for _ in range(1000):
-        if send.envs and send.envs[-1].payload == {"state": "running"}:
-            break
-        await asyncio.sleep(0.01)
-    assert send.envs[-1].payload == {"state": "running"}
-    # "running" is sent before the child exists; cancelling before the spawn
-    # is a no-op and the 10s stub would outlive the test (a race the full
-    # suite exposes). Wait until the runner has actually spawned.
-    for _ in range(1000):
-        runner = agent.runtime._runners.get("sess_1")
-        if runner is not None and runner.pid is not None:
-            break
-        await asyncio.sleep(0.01)
-    assert runner is not None and runner.pid is not None
+                                payload={"text": "slow", "env": {"STUB_DELAY": "10"}}))
+    # Cancel only makes sense once the child exists: wait (bounded, so a
+    # broken run fails fast) for the runner to have spawned, then cancel.
+    # `running` is sent before the spawn, and the runner records its pid only
+    # after the spawn completed.
+    await wait_until(lambda: getattr(
+        agent.runtime._runners.get("sess_1"), "pid", None) is not None)
+    pid = agent.runtime._runners["sess_1"].pid
     await agent.handle(Envelope(type="session.cancel", request_id="r3",
                                 session_id="sess_1", payload={}))
-    await asyncio.sleep(0.3)  # let the cancelled task emit session.failed
+    # session.failed is the run task's last act: wait for it by event, not by
+    # a fixed sleep (a loaded machine stretches fork/kill latency)
+    await wait_until(lambda: "session.failed" in send.types())
+    await wait_until(lambda: not agent.runtime._active)
     ack = send.envs[send.types().index("session.cancel_ack")]
     assert ack.request_id == "r3" and ack.session_id == "sess_1"
     assert ack.payload == {"state": "accepted"}
-    assert "session.failed" in send.types()
     failed = send.envs[send.types().index("session.failed")]
     assert failed.payload == {"reason": "cancelled"}
+    with pytest.raises(ProcessLookupError):  # whole process group is gone
+        os.killpg(pid, 0)
 
 
 async def test_cancel_without_run_acks_already_finished(tmp_path):
@@ -149,7 +173,7 @@ async def test_cancel_before_run_task_starts_still_emits_cancelled(tmp_path):
                                 payload={"workspace": str(tmp_path)}))
     await agent.handle(Envelope(type="session.message", request_id="r2",
                                 session_id="sess_1",
-                                payload={"text": "slow", "env": {"OMP_STUB_DELAY": "10"}}))
+                                payload={"text": "slow", "env": {"STUB_DELAY": "10"}}))
     await agent.handle(Envelope(type="session.cancel", request_id="r3",
                                 session_id="sess_1", payload={}))
     task = agent.runtime._active.get("sess_1")
@@ -162,7 +186,7 @@ async def test_cancel_before_run_task_starts_still_emits_cancelled(tmp_path):
 
 
 async def test_workspace_binding_survives_restart(tmp_path, monkeypatch):
-    monkeypatch.setattr(runtime_mod, "OmpRunner", RecordingRunner)
+    use_runner(monkeypatch, RecordingRunner)
     RecordingRunner.calls = []
 
     ws_a = tmp_path / "project-a"
@@ -180,16 +204,18 @@ async def test_workspace_binding_survives_restart(tmp_path, monkeypatch):
     await agent.handle(Envelope(type="session.message", request_id="r2",
                                 session_id="sess_1", payload={"text": "go"}))
     await asyncio.wait_for(agent.runtime._active["sess_1"], 5)
-    assert agent.runtime._state["sess_1"] == {"omp": "stub-session-2",
-                                              "ws": str(ws_a), "status": "idle"}
+    assert agent.runtime._state["sess_1"] == {
+        "omp": "stub-session-2", "rt": "omp", "ws": str(ws_a),
+        "status": "idle"}
 
     # second adapter process (restart): journal replay restores the binding,
     # so the resumed run must execute in project-a with the recorded omp
     # session id — not the default workspace
     resumed = AdapterAgent(make_settings(tmp_path), Recorder())
     await resumed.on_connect()
-    assert resumed.runtime._state["sess_1"] == {"omp": "stub-session-2",
-                                                "ws": str(ws_a), "status": "idle"}
+    assert resumed.runtime._state["sess_1"] == {
+        "omp": "stub-session-2", "rt": "omp", "ws": str(ws_a),
+        "status": "idle"}
     await resumed.handle(Envelope(type="session.message", request_id="r3",
                                   session_id="sess_1", payload={"text": "again"}))
     await asyncio.wait_for(resumed.runtime._active["sess_1"], 5)
@@ -198,7 +224,7 @@ async def test_workspace_binding_survives_restart(tmp_path, monkeypatch):
 
 
 async def test_legacy_state_file_imported_on_first_start(tmp_path, monkeypatch):
-    monkeypatch.setattr(runtime_mod, "OmpRunner", RecordingRunner)
+    use_runner(monkeypatch, RecordingRunner)
     RecordingRunner.calls = []
 
     # v1 state file: plain omp id strings, no workspace recorded
@@ -238,37 +264,25 @@ async def test_on_connect_publishes_snapshot(tmp_path):
 
 
 class StreamRunner:
-    """OmpRunner stand-in replaying canned omp stream events."""
+    """Runner stand-in replaying canned runtime events."""
+    pid = None
+    last_stderr_tail = ""
 
-    def __init__(self, omp_bin, stream_limit=None):
-        pass
-
-    async def run(self, workspace, omp_session_id, text, env=None,
-                  on_event=None, on_spawn=None):
-        events = [
-            {"type": "message_update", "assistantMessageEvent":
-                {"type": "thinking_start", "contentIndex": 0}},
-            {"type": "tool_execution_start", "toolCallId": "c1",
-             "toolName": "bash", "args": {"command": "echo hi"},
-             "intent": "Running echo"},
-            {"type": "tool_execution_end", "toolCallId": "c1",
-             "toolName": "bash"},
-            {"type": "message_update", "assistantMessageEvent":
-                {"type": "text_start", "contentIndex": 0}},
-            {"type": "message_update", "assistantMessageEvent":
-                {"type": "text_delta", "contentIndex": 0, "delta": "hi"}},
-        ]
-        if on_event is not None:
-            for ev in events:
-                await on_event(ev)
-        return "stub-session-2", "hi"
+    async def run(self, req, emit, on_spawn=None):
+        for event in [Activity("think"),
+                      Activity("tool", "start", "bash", "Running echo"),
+                      Activity("tool", "end", "bash"),
+                      Delta(reset=True),
+                      Delta("hi")]:
+            await emit(event)
+        return RunResult("stub-session-2", "hi")
 
     async def cancel(self):
         pass
 
 
 async def test_run_streams_delta_and_activity(tmp_path, monkeypatch):
-    monkeypatch.setattr(runtime_mod, "OmpRunner", StreamRunner)
+    use_runner(monkeypatch, StreamRunner)
     send = Recorder()
     agent = AdapterAgent(make_settings(tmp_path), send)
     await agent.handle(Envelope(type="session.create", request_id="r1",
@@ -296,7 +310,7 @@ async def test_run_streams_delta_and_activity(tmp_path, monkeypatch):
 
 async def test_sync_loop_pushes_journal_tail_and_rewinds_on_ack(tmp_path,
                                                                 monkeypatch):
-    monkeypatch.setattr(runtime_mod, "OmpRunner", RecordingRunner)
+    use_runner(monkeypatch, RecordingRunner)
     send = Recorder()
     settings = make_settings(tmp_path, sync_interval=3600)
     agent = AdapterAgent(settings, send)
@@ -320,7 +334,7 @@ async def test_sync_loop_pushes_journal_tail_and_rewinds_on_ack(tmp_path,
 
 
 async def test_ack_catalog_gap_triggers_need(tmp_path, monkeypatch):
-    monkeypatch.setattr(runtime_mod, "OmpRunner", RecordingRunner)
+    use_runner(monkeypatch, RecordingRunner)
     send = Recorder()
     agent = AdapterAgent(make_settings(tmp_path, sync_interval=3600), send)
     await agent.on_connect()
@@ -341,7 +355,7 @@ async def test_ack_catalog_skips_entries_without_omp_id(tmp_path, monkeypatch):
     """Hub-internal rows (NULL omp_session_id) must not become local
     sessions: adopting them by hub_session_id is how ghost ids leaked
     into the journal and rebound the hub row."""
-    monkeypatch.setattr(runtime_mod, "OmpRunner", RecordingRunner)
+    use_runner(monkeypatch, RecordingRunner)
     send = Recorder()
     agent = AdapterAgent(make_settings(tmp_path, sync_interval=3600), send)
     await agent.on_connect()
@@ -355,7 +369,7 @@ async def test_ack_catalog_skips_entries_without_omp_id(tmp_path, monkeypatch):
 
 
 async def test_sync_messages_merge_into_journal(tmp_path, monkeypatch):
-    monkeypatch.setattr(runtime_mod, "OmpRunner", RecordingRunner)
+    use_runner(monkeypatch, RecordingRunner)
     send = Recorder()
     agent = AdapterAgent(make_settings(tmp_path, sync_interval=3600), send)
     await agent.on_connect()
@@ -370,7 +384,7 @@ async def test_sync_messages_merge_into_journal(tmp_path, monkeypatch):
 
 
 async def test_sync_now_nudge_runs_pending_push(tmp_path, monkeypatch):
-    monkeypatch.setattr(runtime_mod, "OmpRunner", RecordingRunner)
+    use_runner(monkeypatch, RecordingRunner)
     send = Recorder()
     agent = AdapterAgent(make_settings(tmp_path, sync_interval=3600), send)
     await agent.on_connect()
@@ -382,7 +396,7 @@ async def test_sync_now_nudge_runs_pending_push(tmp_path, monkeypatch):
 
 
 async def test_ack_from_stale_instance_adopts_empty_hub(tmp_path, monkeypatch):
-    monkeypatch.setattr(runtime_mod, "OmpRunner", RecordingRunner)
+    use_runner(monkeypatch, RecordingRunner)
     send = Recorder()
     agent = AdapterAgent(make_settings(tmp_path, sync_interval=3600), send)
     await agent.on_connect()
@@ -406,7 +420,7 @@ async def test_ack_resolves_omp_id_to_local_session(tmp_path, monkeypatch):
     """The hub catalogs completed Discord sessions by omp id while the
     journal keys them by the hub-shared local id: the ack must resolve
     through the omp index — no ghost adoption, need keyed by local id."""
-    monkeypatch.setattr(runtime_mod, "OmpRunner", RecordingRunner)
+    use_runner(monkeypatch, RecordingRunner)
     send = Recorder()
     agent = AdapterAgent(make_settings(tmp_path, sync_interval=3600), send)
     await agent.on_connect()

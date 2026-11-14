@@ -38,7 +38,7 @@ def _simulate_daemon(tmp_path, respond):
 
 
 def test_submit_and_collect(tmp_path, monkeypatch):
-    monkeypatch.setenv("DELEGATION_DIR", str(tmp_path))
+    monkeypatch.setenv("ADAPTER_DELEGATION_DIR", str(tmp_path))
     _simulate_daemon(
         tmp_path, lambda request: {"ok": True, "data": {"echo": request}})
     out = cli.main(["ask", "--session", "s1", "--text", "hi",
@@ -47,7 +47,7 @@ def test_submit_and_collect(tmp_path, monkeypatch):
 
 
 def test_timeout_when_daemon_absent(tmp_path, monkeypatch):
-    monkeypatch.setenv("DELEGATION_DIR", str(tmp_path))
+    monkeypatch.setenv("ADAPTER_DELEGATION_DIR", str(tmp_path))
     with pytest.raises(SystemExit) as ei:
         cli.main(["ask", "--session", "s1", "--text", "hi",
                   "--timeout", "0.1"])
@@ -55,12 +55,33 @@ def test_timeout_when_daemon_absent(tmp_path, monkeypatch):
 
 
 def test_error_result_exits_nonzero(tmp_path, monkeypatch):
-    monkeypatch.setenv("DELEGATION_DIR", str(tmp_path))
+    monkeypatch.setenv("ADAPTER_DELEGATION_DIR", str(tmp_path))
     _simulate_daemon(tmp_path, lambda request: {"ok": False, "error": "busy"})
     with pytest.raises(SystemExit) as ei:
         cli.main(["ask", "--session", "s1", "--text", "hi",
                   "--timeout", "10"])
     assert ei.value.code == 2
+
+
+def test_dir_option_beats_env(tmp_path, monkeypatch):
+    box = tmp_path / "box"
+    other = tmp_path / "other"
+    other.mkdir()
+    monkeypatch.setenv("ADAPTER_DELEGATION_DIR", str(other))
+    box.mkdir()
+    _simulate_daemon(
+        box, lambda request: {"ok": True, "data": {"echo": request}})
+    out = cli.main(["agents", "--dir", str(box), "--timeout", "10"])
+    assert out["data"]["echo"] == {"op": "directory"}
+    assert not list(other.iterdir())  # nothing was published to the env dir
+
+
+def test_missing_drop_box_dir_is_a_usage_error(monkeypatch):
+    monkeypatch.delenv("ADAPTER_DELEGATION_DIR", raising=False)
+    with pytest.raises(SystemExit) as ei:
+        cli.main(["agents", "--timeout", "0.1"])
+    assert "ADAPTER_DELEGATION_DIR" in str(ei.value.code)
+    assert "--dir" in str(ei.value.code)
 
 
 class FakeDelegation:
@@ -119,7 +140,7 @@ def _real_daemon(box):
 def test_every_op_reaches_real_dispatcher(tmp_path, monkeypatch, argv,
                                           expected_call, expected_data):
     """CLI command names must speak the ops DropBox._dispatch knows."""
-    monkeypatch.setenv("DELEGATION_DIR", str(tmp_path))
+    monkeypatch.setenv("ADAPTER_DELEGATION_DIR", str(tmp_path))
     fake = FakeDelegation()
     _real_daemon(DropBox(str(tmp_path), fake))
     out = cli.main(argv + ["--timeout", "10"])

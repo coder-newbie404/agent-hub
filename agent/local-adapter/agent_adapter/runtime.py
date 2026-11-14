@@ -1,6 +1,6 @@
 """Session-owning runtime: the local source of truth behind the bridge.
 
-Owns the session registry (journal-backed), the omp run lifecycle (spawn,
+Owns the session registry (journal-backed), the runtime run lifecycle (spawn,
 stream forwarding, cancel), crash recovery, and request-id dedupe. The
 bridge (agent.py) only translates envelopes to calls on this module and
 forwards emitted envelopes to the hub.
@@ -12,15 +12,16 @@ import logging
 import os
 import pathlib
 import signal
-import sqlite3
 import uuid
 from collections import deque
 from datetime import datetime, timezone
 
-from agent_adapter.omp import OmpRunner
 from agent_adapter.protocol import (AGENT_MESSAGE, Envelope, SESSION_ACTIVITY,
-                                  SESSION_COMPLETED, SESSION_DELTA,
-                                  SESSION_FAILED, SESSION_WAITING)
+                                    SESSION_COMPLETED, SESSION_DELTA,
+                                    SESSION_FAILED, SESSION_WAITING)
+from agent_adapter.runtimes import get_runtime
+from agent_adapter.runtimes.base import (Activity, Delta, Event, RunRequest,
+                                         Runner)
 
 logger = logging.getLogger(__name__)
 
@@ -74,9 +75,10 @@ class SessionJournal:
         return True
 
     def session_upserted(self, local_id: str, omp: str | None,
-                         ws: str | None, status: str) -> bool:
+                         ws: str | None, status: str,
+                         rt: str | None = None) -> bool:
         return self.append({"kind": "session_upserted", "local_id": local_id,
-                            "omp": omp, "ws": ws, "status": status,
+                            "omp": omp, "rt": rt, "ws": ws, "status": status,
                             "updated_at": _now()})
 
     def run_started(self, local_id: str, pid: int | None) -> bool:
@@ -224,6 +226,8 @@ class SessionJournal:
         if kind == "session_upserted":
             entry = {"omp": ev.get("omp"), "ws": ev.get("ws"),
                      "status": ev.get("status", "idle")}
+            if ev.get("rt"):  # absent = legacy entry, i.e. omp
+                entry["rt"] = ev["rt"]
             # only hub_cursor/titled events write these; a fresh upsert
             # must not silently drop fields folded from earlier in the
             # journal
@@ -259,11 +263,12 @@ class SessionRuntime:
     def __init__(self, settings, on_event):
         self.settings = settings
         self.on_event = on_event
+        self.spec = get_runtime(settings.runtime)
         self.journal = SessionJournal(settings.journal_dir,
                                       legacy_state_file=settings.state_file)
         self._state: dict[str, dict] = {}
         self._active: dict[str, asyncio.Task] = {}
-        self._runners: dict[str, OmpRunner] = {}
+        self._runners: dict[str, Runner] = {}
         self._seen_requests: deque[str] = deque(maxlen=DEDUPE_CACHE_SIZE)
         self._messages: dict[str, list] = {}
         self._started = False
@@ -335,43 +340,32 @@ class SessionRuntime:
         cur.setdefault("status", "idle")
         self._state[local_id] = cur
         self.journal.session_upserted(local_id, cur["omp"], cur["ws"],
-                                      cur["status"])
+                                      cur["status"], rt=cur.get("rt"))
         return cur
 
     def refresh_titles(self) -> int:
-        """Pull human session titles from omp's own store (read-only) and
-        journal a session_titled event when one appears or changes, so the
-        hub picker shows the local name. Returns events journaled. omp
-        titles lazily and renames; absence is normal and never overwrites.
+        """Pull human session titles from the runtime's own store (read-only)
+        and journal a session_titled event when one appears or changes, so
+        the hub picker shows the local name. Returns events journaled. Stores
+        title lazily and rename; absence is normal and never overwrites.
         Runs on the sync tick, before push_pending, so title events ride
-        the same push."""
-        if not self._state:
+        the same push. Runtimes without a title store return 0."""
+        if self.spec.titles is None or not self._state:
             return 0
-        db_path = pathlib.Path(self.settings.omp_titles_db).expanduser()
-        if not db_path.exists():
+        native = {sid: entry["omp"] for sid, entry in self._state.items()
+                  if entry.get("omp")
+                  and (entry.get("rt") or "omp") == self.spec.name}
+        if not native:
             return 0
+        titles = self.spec.titles(self.settings, list(native.values()))
         journaled = 0
-        try:
-            con = sqlite3.connect(
-                f"file:{db_path}?mode=ro", uri=True, timeout=2)
-            try:
-                for sid, entry in self._state.items():
-                    omp = entry.get("omp")
-                    if not omp:
-                        continue
-                    row = con.execute(
-                        "SELECT title FROM session_titles "
-                        "WHERE session_id=?", (omp,)).fetchone()
-                    title = str(row[0]).strip() if row and row[0] else ""
-                    if title and title != entry.get("title"):
-                        self.journal.titled(sid, title)
-                        entry["title"] = title
-                        journaled += 1
-            finally:
-                con.close()
-        except sqlite3.Error:
-            logger.warning("omp titles db unreadable (%s); skipping",
-                           db_path, exc_info=True)
+        for sid, native_id in native.items():
+            title = titles.get(native_id) or ""
+            entry = self._state[sid]
+            if title and title != entry.get("title"):
+                self.journal.titled(sid, title)
+                entry["title"] = title
+                journaled += 1
         return journaled
 
     def snapshot_rows(self) -> list[dict]:
@@ -389,12 +383,13 @@ class SessionRuntime:
             })
         return rows
 
-    def local_for_omp(self, omp: str | None) -> str | None:
-        """Map an omp session id to its journal key. Discord-created
+    def local_for_native(self, omp: str | None) -> str | None:
+        """Map a runtime-native session id to its journal key. Discord-created
         sessions are journaled under the hub's id, but the hub's catalog
-        reports the omp id once a run completes — without this mapping
+        reports the native id once a run completes — without this mapping
         every completed Discord session looks unknown and gets re-adopted
-        as an omp-id-keyed ghost."""
+        as a native-id-keyed ghost. The journal and wire field is still
+        called `omp` (legacy name; runtime-native session id)."""
         if not omp:
             return None
         for sid, entry in self._state.items():
@@ -482,55 +477,28 @@ class SessionRuntime:
         task.cancel()
         return "accepted"
 
-    def _runner_for(self, session_id: str) -> OmpRunner:
+    def _runner_for(self, session_id: str) -> Runner:
         if session_id not in self._runners:
-            self._runners[session_id] = OmpRunner(
-                self.settings.omp_bin,
-                stream_limit=self.settings.stream_limit_bytes)
+            self._runners[session_id] = self.spec.make_runner(self.settings)
         return self._runners[session_id]
 
-    def _stream_forwarder(self, sid: str, request_id: str | None):
-        """Builds the omp on_event callback for one run. UX stream only:
-        a failed delta/activity send must never fail the run itself."""
-        async def on_event(ev: dict) -> None:
-            try:
-                await self._forward_stream_event(sid, request_id, ev)
-            except Exception:
-                logger.debug("stream forward failed for %s", sid, exc_info=True)
-        return on_event
-
-    async def _forward_stream_event(self, sid: str, request_id: str | None,
-                                    ev: dict) -> None:
-        t = ev.get("type")
-        if t == "message_update":
-            a = ev.get("assistantMessageEvent") or {}
-            at = a.get("type", "")
-            if at == "text_start":
-                await self._emit(Envelope(
-                    type=SESSION_DELTA, request_id=request_id, session_id=sid,
-                    payload={"reset": True}))
-            elif at == "text_delta":
-                await self._emit(Envelope(
-                    type=SESSION_DELTA, request_id=request_id, session_id=sid,
-                    payload={"text": a.get("delta", "")}))
-            elif at == "thinking_start":
-                await self._emit(Envelope(
-                    type=SESSION_ACTIVITY, request_id=request_id,
-                    session_id=sid, payload={"kind": "think"}))
-        elif t == "tool_execution_start":
-            args = ev.get("args") or {}
-            detail = (ev.get("intent")
-                      or " ".join(str(v) for v in args.values() if v))[:120]
-            await self._emit(Envelope(
-                type=SESSION_ACTIVITY, request_id=request_id, session_id=sid,
-                payload={"kind": "tool", "state": "start",
-                         "tool": ev.get("toolName", "tool"),
-                         "detail": detail}))
-        elif t == "tool_execution_end":
-            await self._emit(Envelope(
-                type=SESSION_ACTIVITY, request_id=request_id, session_id=sid,
-                payload={"kind": "tool", "state": "end",
-                         "tool": ev.get("toolName", "tool")}))
+    async def _forward(self, sid: str, request_id: str | None,
+                       event: Event) -> None:
+        if isinstance(event, Delta):
+            payload = ({"reset": True} if event.reset
+                       else {"text": event.text})
+            kind = SESSION_DELTA
+        elif isinstance(event, Activity):
+            payload = {"kind": event.kind}
+            for key in ("state", "tool", "detail"):
+                value = getattr(event, key)
+                if value is not None:
+                    payload[key] = value
+            kind = SESSION_ACTIVITY
+        else:
+            return
+        await self._emit(Envelope(type=kind, request_id=request_id,
+                                  session_id=sid, payload=payload))
 
     async def _run(self, sid: str, text: str, request_id: str | None,
                    test_env: dict | None) -> None:
@@ -539,23 +507,45 @@ class SessionRuntime:
         runner = self._runner_for(sid)
         entry = self._state.get(sid) or {}
         workspace = entry.get("ws") or self.settings.default_workspace
+        resume = entry.get("omp")
+        if resume and (entry.get("rt") or "omp") != self.spec.name:
+            logger.warning("session %s belongs to runtime %r, not %r; "
+                           "starting fresh instead of resuming %s", sid,
+                           entry.get("rt") or "omp", self.spec.name, resume)
+            resume = None
+        req = RunRequest(
+            workspace=workspace, resume_id=resume, text=text,
+            policy=self.settings.policy, model=self.settings.model,
+            env=(test_env or {}) if self.settings.allow_payload_env else {})
+
+        async def emit(event: Event) -> None:
+            # UX stream only: a failed delta/activity send never fails the run
+            try:
+                await self._forward(sid, request_id, event)
+            except Exception:
+                logger.debug("stream forward failed for %s", sid,
+                             exc_info=True)
+
         status = "failed"
         try:
-            omp_sid, reply = await runner.run(
-                workspace, entry.get("omp"), text, env=test_env,
-                on_event=self._stream_forwarder(sid, request_id),
+            result = await runner.run(
+                req, emit,
                 on_spawn=lambda pid: self.journal.run_started(sid, pid))
             self.upsert_session(sid, workspace=workspace)
-            self._state[sid]["omp"] = omp_sid
-            self.journal.session_upserted(sid, omp_sid,
-                                          self._state[sid].get("ws"), "idle")
+            self._state[sid]["omp"] = result.resume_id
+            self._state[sid]["rt"] = self.spec.name
+            self.journal.session_upserted(sid, result.resume_id,
+                                          self._state[sid].get("ws"), "idle",
+                                          rt=self.spec.name)
             status = "idle"
-            self.journal_assistant_message(sid, reply, request_id)
+            self.journal_assistant_message(sid, result.text, request_id)
             await self._emit(Envelope(type=AGENT_MESSAGE, request_id=request_id,
-                                      session_id=sid, payload={"text": reply}))
+                                      session_id=sid,
+                                      payload={"text": result.text}))
             await self._emit(Envelope(type=SESSION_COMPLETED,
                                       request_id=request_id, session_id=sid,
-                                      payload={"omp_session_id": omp_sid}))
+                                      payload={"omp_session_id":
+                                               result.resume_id}))
         except asyncio.CancelledError:
             try:
                 await runner.cancel()
