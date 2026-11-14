@@ -146,7 +146,7 @@ async def test_model_and_runtime_args_reach_argv(tmp_path):
     argv = args_file.read_text().splitlines()
     assert argv[argv.index("--model") + 1] == "m-1"
     assert argv[argv.index("--foo") + 1] == "bar"
-    assert argv[-2:] == ["-p", "hello"]
+    assert argv[-3:] == ["-p", "--", "hello"]
 
 
 async def test_child_env_is_allow_listed(tmp_path, monkeypatch):
@@ -222,3 +222,23 @@ async def test_default_policy_adds_no_approval_flag(tmp_path):
 def test_spec_policies_match_table():
     assert get_runtime("omp").policies == frozenset(POLICIES)
     assert set(POLICIES) == {"default", "readonly", "edits", "full"}
+
+
+@pytest.mark.parametrize("text", [
+    "--version", "--approval-mode=yolo hello", "- hello", "-r other-session",
+])
+@pytest.mark.parametrize("policy", ["default", "readonly", "edits"])
+async def test_flag_like_text_only_appears_after_option_terminator(
+        tmp_path, text, policy):
+    args_file = tmp_path / "argv"
+    r = runner(runtime_args=["--foo"])
+    await r.run(req(text, resume="sid-1", model="m-1", policy=policy,
+                    env={"STUB_ARGS_FILE": str(args_file)}), _noop)
+    argv = args_file.read_text().splitlines()
+    assert argv[-2:] == ["--", text]
+    assert argv[-3] == "-p"
+    assert argv.count(text) == 1
+    # only the policy contributes approval flags, all before the terminator
+    options = argv[:argv.index("--")]
+    approvals = [a for a in options if a.startswith("--approval-mode")]
+    assert len(approvals) == (0 if policy == "default" else 1)

@@ -76,7 +76,11 @@ class OmpDriver:
         if req.model:
             args += ["--model", req.model]
         args += list(self.settings.runtime_args)
-        args += ["-p", req.text]
+        # `-p` is a boolean flag; the prompt is a positional MESSAGES arg.
+        # `--` ends option parsing so hub text such as "--approval-mode=yolo"
+        # or "--version" can never be read as an omp flag (verified on omp
+        # 18.1.19: without `--`, `-p --version` prints the version and exits).
+        args += ["-p", "--", req.text]
         return args
 
     def parser(self) -> OmpParser:
