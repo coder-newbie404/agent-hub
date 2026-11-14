@@ -98,8 +98,9 @@ def test_error_fixture_surfaces_the_error_message():
 
 def test_edit_fixture_text_follows_completed_write_tool():
     events, _, final, error = parse_fixture("edit-noauto")
+    # file CONTENT ("ok") must not leak into the activity detail
     assert events[0] == Activity("tool", "start", "write",
-                                 "ok /tmp/cap-ws/created.txt")  # one line
+                                 "/tmp/cap-ws/created.txt")
     assert events[1] == Activity("tool", "end", "write")
     assert final == "Created /tmp/cap-ws/created.txt with the word `ok`."
     assert error is None
@@ -117,6 +118,34 @@ def test_parser_ignores_lifecycle_events():
     p = OpencodeParser().feed({"type": "step_finish", "sessionID": "s",
                                "part": {"reason": "stop"}})
     assert p == type(p)(session_id="s")
+
+
+def _tool_detail(inp):
+    p = OpencodeParser().feed({"type": "tool_use", "sessionID": "s", "part": {
+        "tool": "t", "state": {"status": "completed", "input": inp}}})
+    return p.events[0].detail
+
+
+def test_tool_detail_picks_the_known_key_not_file_content():
+    assert _tool_detail({"content": "SECRET BODY", "filePath": "/w/a.txt"}) \
+        == "/w/a.txt"
+    assert _tool_detail({"description": "d", "command": "ls\n  -la"}) \
+        == "ls -la"
+
+
+def test_tool_detail_is_empty_for_unknown_keys():
+    assert _tool_detail({"content": "SECRET", "other": "x"}) == ""
+    assert _tool_detail({}) == ""
+
+
+def test_tool_detail_is_capped_at_120_chars():
+    assert len(_tool_detail({"command": "x" * 500})) == 120
+
+
+def test_empty_final_text_part_does_not_count_as_a_reply():
+    p = OpencodeParser().feed({"type": "text", "sessionID": "s",
+                               "part": {"type": "text", "text": ""}})
+    assert p.final_text is None
 
 
 def test_error_without_message_falls_back_to_name():
@@ -161,6 +190,17 @@ async def test_rejected_permission_is_a_failure_with_stderr_evidence():
     assert "auto-rejecting" in e.value.stderr_tail
 
 
+async def test_empty_final_text_part_is_still_no_final_reply(tmp_path):
+    bin_ = tmp_path / "opencode-empty"
+    bin_.write_text(
+        "#!/usr/bin/env bash\n"
+        "echo '{\"type\":\"text\",\"sessionID\":\"s1\","
+        "\"part\":{\"type\":\"text\",\"text\":\"\"}}'\n")
+    bin_.chmod(0o755)
+    with pytest.raises(RunError, match="no final reply"):
+        await runner(runtime_bin=str(bin_)).run(req(), _noop)
+
+
 async def test_run_failure_raises_with_stderr():
     with pytest.raises(RunError) as e:
         await runner().run(req(env={"STUB_FAIL": "1"}), _noop)
@@ -202,7 +242,8 @@ async def _argv(tmp_path, *, settings=None, **kw):
 
 async def test_default_argv(tmp_path):
     argv = await _argv(tmp_path, text="do it")
-    assert argv[:4] == ["run", "do it", "--format", "json"]
+    assert argv[:3] == ["run", "--format", "json"]
+    assert argv[-2:] == ["--", "do it"]
     assert argv[argv.index("--dir") + 1] == "/tmp"
     for absent in ("-s", "-m", "--auto"):
         assert absent not in argv
@@ -213,11 +254,22 @@ async def test_resume_model_and_runtime_args_reach_argv(tmp_path):
                        settings={"runtime_args": ["--foo", "bar"]})
     assert argv[argv.index("-s") + 1] == "ses_abc"
     assert argv[argv.index("-m") + 1] == "opencode/m-1"
-    assert argv[-2:] == ["--foo", "bar"]
+    # operator flags stay before the `--` terminator; the text is last
+    assert argv[-4:] == ["--foo", "bar", "--", "hello"]
+
+
+@pytest.mark.parametrize("text", ["--auto hello", "- hello", "-s evil"])
+async def test_flag_like_text_is_never_parsed_as_a_flag(tmp_path, text):
+    # yargs treats a leading-dash positional as a flag: `--auto ...` from a
+    # hub message would flip auto-approve, `- x` made opencode print usage.
+    argv = await _argv(tmp_path, text=text, policy="default")
+    assert argv[-2:] == ["--", text]
+    assert "--auto" not in argv[:-2]
+    assert "-s" not in argv[:-2]
 
 
 async def test_full_policy_adds_auto_and_only_full(tmp_path):
-    assert "--auto" in await _argv(tmp_path, policy="full")
+    assert "--auto" in (await _argv(tmp_path, policy="full"))[:-2]
     assert "--auto" not in await _argv(tmp_path, policy="default")
 
 

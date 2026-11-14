@@ -25,6 +25,21 @@ POLICIES: dict[str, tuple[str, ...]] = {"default": (), "full": ("--auto",)}
 ERROR_VISIBILITY_FLAGS = ("--print-logs", "--log-level", "ERROR")
 
 
+# Tool input keys that describe WHAT a tool acts on, in priority order. Other
+# inputs (notably file `content`, edit bodies) are never forwarded: the detail
+# is sent to the hub and shown in chat.
+DETAIL_KEYS = ("command", "filePath", "path", "pattern", "query", "url",
+               "description")
+
+
+def _tool_detail(inp: dict) -> str:
+    for key in DETAIL_KEYS:
+        value = inp.get(key)
+        if value:
+            return " ".join(str(value).split())[:120]
+    return ""
+
+
 class OpencodeParser:
     def feed(self, obj: dict) -> Parsed:
         p = Parsed(session_id=obj.get("sessionID"))
@@ -34,15 +49,14 @@ class OpencodeParser:
             text = part.get("text", "")
             p.events.append(Delta(reset=True))
             p.events.append(Delta(text=text))
-            p.final_text = text            # the last text part wins
+            if text:                       # the last non-empty text part wins
+                p.final_text = text
         elif t == "tool_use":
             # Emitted once, already finished (completed or error): there are
             # no separate start/end events, so emit both.
             tool = part.get("tool", "tool")
             inp = (part.get("state") or {}).get("input") or {}
-            detail = " ".join(
-                " ".join(str(v) for v in inp.values() if v).split())[:120]
-            p.events.append(Activity("tool", "start", tool, detail))
+            p.events.append(Activity("tool", "start", tool, _tool_detail(inp)))
             p.events.append(Activity("tool", "end", tool))
         elif t == "error":
             data = (obj.get("error") or {}).get("data") or {}
@@ -63,7 +77,7 @@ class OpencodeDriver:
         self.settings = settings
 
     def argv(self, binary: str, req: RunRequest) -> list[str]:
-        args = [binary, "run", req.text, "--format", "json"]
+        args = [binary, "run", "--format", "json"]
         args += ERROR_VISIBILITY_FLAGS
         if req.resume_id:
             args += ["-s", req.resume_id]
@@ -72,6 +86,10 @@ class OpencodeDriver:
         if req.model:
             args += ["-m", req.model]
         args += list(self.settings.runtime_args)
+        # yargs parses a leading-dash positional as a flag (`--auto ...` would
+        # flip auto-approve, `- x` prints usage and exits 0): flags first, then
+        # `--`, then the untrusted text last.
+        args += ["--", req.text]
         return args
 
     def parser(self) -> OpencodeParser:
