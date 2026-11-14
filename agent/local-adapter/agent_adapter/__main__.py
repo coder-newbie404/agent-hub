@@ -3,6 +3,7 @@ import logging
 import time
 
 import websockets
+from pydantic import ValidationError
 
 from agent_adapter.agent import AdapterAgent
 from agent_adapter.client import AdapterClient
@@ -12,8 +13,21 @@ logging.basicConfig(level=logging.INFO)  # reconnect attempts must be visible
 logger = logging.getLogger("agent_adapter")
 
 
+def _config_error(exc: ValidationError) -> str:
+    lines = ["invalid adapter configuration:"]
+    for err in exc.errors():
+        field = ".".join(str(p) for p in err["loc"]) or "settings"
+        msg = err["msg"].removeprefix("Value error, ")
+        lines.append(f"  {field}: {msg}")
+    return "\n".join(lines)
+
+
 async def main() -> None:
-    settings = Settings()
+    try:
+        settings = Settings()
+    except ValidationError as exc:
+        # a config error is not a crash: the supervisor must not retry it
+        raise SystemExit(_config_error(exc)) from None
     msg = legacy_path_error(settings)
     if msg:
         raise SystemExit(msg)
