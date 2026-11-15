@@ -5,6 +5,7 @@ import time
 import tomllib
 
 import websockets
+from dotenv import load_dotenv
 from pydantic import ValidationError
 from pydantic_settings import SettingsError
 
@@ -44,6 +45,9 @@ def _config_error(exc: Exception) -> str:
 
 
 async def main() -> None:
+    # `.env` joins the process environment (real env wins): the agent child
+    # is built from os.environ, so a .env-only key must live there to reach it.
+    load_dotenv(".env")
     try:
         settings = Settings()
     except (ValidationError, SettingsError, tomllib.TOMLDecodeError) as exc:

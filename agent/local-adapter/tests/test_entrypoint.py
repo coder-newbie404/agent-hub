@@ -1,5 +1,6 @@
 """The daemon supervisor must survive crashes and keep the agent online."""
 import asyncio
+import os
 
 import pytest
 
@@ -43,7 +44,8 @@ def test_run_does_not_restart_on_deliberate_exit(monkeypatch):
     assert ei.value.code == 78
 
 
-def test_main_refuses_to_start_on_legacy_data(monkeypatch, capsys):
+def test_main_refuses_to_start_on_legacy_data(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)   # no stray .env leaking into os.environ
     monkeypatch.setattr(entry, "Settings", lambda: object())
     monkeypatch.setattr(entry, "legacy_path_error",
                         lambda settings: "found legacy adapter data")
@@ -56,7 +58,7 @@ def test_main_refuses_to_start_on_legacy_data(monkeypatch, capsys):
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
-    """Hermetic process env for the real Settings(): no .env, no toml."""
+    """Hermetic process env for the real Settings(): empty cwd, no toml."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ADAPTER_CONFIG", "")
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -147,3 +149,52 @@ def test_runtime_crash_after_valid_config_is_still_retried(env, tmp_path):
     with pytest.raises(KeyboardInterrupt):
         entry.run()
     assert sleeps == [5]
+
+
+def _start_capturing(env):
+    """Run the real main() with the agent/client stubbed; return the Settings
+    it built."""
+    built = []
+
+    class Client:
+        def __init__(self, settings, agent):
+            pass
+
+        async def run_forever(self):
+            pass
+
+    env.setattr(entry, "AdapterAgent", lambda settings, send: built.append(settings))
+    env.setattr(entry, "AdapterClient", Client)
+    asyncio.run(entry.main())
+    return built[0]
+
+
+def test_dotenv_values_reach_the_agent_child_env(env, tmp_path):
+    """A key that only exists in `.env` must be forwarded to the agent exactly
+    like a real env var, with no shell sourcing."""
+    from agent_adapter.runtimes.base import child_env
+
+    for name in ("MANAGER_URL", "AGENT_TOKEN", "DEFAULT_WORKSPACE", "RUNTIME",
+                 "ZAI_API_KEY", "GOOGLE_CLOUD_PROJECT"):
+        env.setenv(name, "x")   # registers teardown for what load_dotenv sets
+        env.delenv(name)
+    (tmp_path / ".env").write_text(
+        "MANAGER_URL=wss://from-dotenv/ws\nAGENT_TOKEN=tok\n"
+        f"DEFAULT_WORKSPACE={tmp_path}\nRUNTIME=omp\n"
+        "ZAI_API_KEY=key-from-dotenv\nGOOGLE_CLOUD_PROJECT=proj\n"
+        'ENV_PASSTHROUGH=["GOOGLE_CLOUD_PROJECT"]\n')
+    settings = _start_capturing(env)
+    assert settings.manager_url == "wss://from-dotenv/ws"
+    exclude = {n.upper() for n in type(settings).model_fields}
+    child = child_env(os.environ, auth=("*_API_KEY",),
+                      passthrough=settings.env_passthrough, exclude=exclude,
+                      extra={})
+    assert child["ZAI_API_KEY"] == "key-from-dotenv"
+    assert child["GOOGLE_CLOUD_PROJECT"] == "proj"
+    assert "AGENT_TOKEN" not in child
+
+
+def test_real_env_beats_dotenv(env, tmp_path):
+    (tmp_path / ".env").write_text("MANAGER_URL=wss://from-dotenv/ws\n")
+    settings = _start_capturing(env)
+    assert settings.manager_url == "wss://x"   # the `env` fixture's real value

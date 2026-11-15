@@ -18,7 +18,7 @@ def hermetic_env(monkeypatch):
 
 def _settings(**kw) -> Settings:
     base = dict(manager_url="wss://x", agent_token="t",
-                default_workspace="/tmp", runtime="omp", _env_file=None)
+                default_workspace="/tmp", runtime="omp")
     return Settings(**{**base, **kw})
 
 
@@ -33,7 +33,7 @@ def test_delegation_and_registration_defaults():
 def test_runtime_is_required():
     with pytest.raises(ValidationError, match="runtime"):
         Settings(manager_url="wss://x", agent_token="t",
-                 default_workspace="/tmp", _env_file=None)
+                 default_workspace="/tmp")
 
 
 def test_unknown_runtime_lists_available_names():

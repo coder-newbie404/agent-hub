@@ -17,7 +17,7 @@ def _settings(tmp_path, toml: str, **env) -> Settings:
     os.environ.update(merged)
     os.environ["ADAPTER_CONFIG"] = str(cfg)
     try:
-        return Settings(_env_file=os.devnull)
+        return Settings()
     finally:
         for k, v in old.items():
             if v is None:

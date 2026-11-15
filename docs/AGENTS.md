@@ -156,9 +156,8 @@ and reuse `JsonlProcessRunner`. Use `runtimes/omp.py` as the reference.
 - `auth_env`: fnmatch patterns of the credential variables the CLI needs. The
   agent process gets only an allow-list of the adapter's environment (base
   set + `auth_env` + the operator's `ENV_PASSTHROUGH`), never `AGENT_TOKEN`.
-  Only variables present in the adapter's process environment (shell export,
-  systemd `EnvironmentFile`) are forwarded; a variable that is only in a
-  `.env` file read by the adapter itself never reaches the agent process.
+  Variables in the adapter's environment are forwarded, and that includes
+  everything in the adapter's own `.env` (loaded at startup, real env wins).
 - `argv(binary, req) -> list[str]`: the command for one turn. `req` is a
   `RunRequest(workspace, resume_id, text, policy, model, env)`; add the
   resume flag when `resume_id` is set, the policy flags, `--model` when

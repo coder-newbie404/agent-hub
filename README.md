@@ -25,49 +25,48 @@ docs assume `.venv/bin` paths. The quickstart uses `omp` on `PATH`; set
 `RUNTIME_BIN` (in the adapter's `.env`) to an absolute path if the binary
 is elsewhere.
 
-1. Start the hub:
+1. Start the hub. Put `ADMIN_TOKEN=<any long random string>` in `.env` (an
+   existing env file works as-is; `.env.example` is only a sample), then:
 
    ```bash
-   cp .env.example .env && sed -i.bak "s|^ADMIN_TOKEN=.*|ADMIN_TOKEN=$(openssl rand -hex 32)|" .env && rm .env.bak
    docker compose up -d        # manager on 127.0.0.1:8000
    until curl -sf http://127.0.0.1:8000/health; do sleep 1; done
    ```
 
-   `.env.example` ships `ADMIN_TOKEN` blank and compose refuses to start
-   until it is set: a published default would be a publicly known admin
-   token on any host deployed from the copied example. The `sed` command
-   (portable across GNU and BSD) fills in a fresh random one; anyone
-   holding it has full admin over the hub. Read it back any time with
-   `grep '^ADMIN_TOKEN=' .env`.
+   No `.env` yet? `echo "ADMIN_TOKEN=$(openssl rand -hex 32)" >> .env`.
+   Compose loads `.env` by itself and refuses to start while `ADMIN_TOKEN`
+   is blank, so a deployment never runs on a publicly known default token.
+   Anyone holding the token has full admin over the hub.
 
-2. Run an adapter on this machine:
+2. Run an adapter on this machine. Put its settings in
+   `agent/local-adapter/.env` (sample: `.env.example` there; `RUNTIME` is
+   `omp`, `claude` or `opencode`):
+
+   ```env
+   RUNTIME=omp
+   MANAGER_URL=ws://127.0.0.1:8000/ws/agent
+   AGENT_TOKEN=<the hub's ADMIN_TOKEN, for now>
+   DEFAULT_WORKSPACE=<dir the agent may use>
+   ```
 
    ```bash
    cd agent/local-adapter
    python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-   cp .env.example .env        # RUNTIME=omp  (omp | claude | opencode)
-                               # MANAGER_URL=ws://127.0.0.1:8000/ws/agent
-                               # AGENT_TOKEN=<ADMIN_TOKEN value for now; print it with:
-                               #   grep '^ADMIN_TOKEN=' ../../.env | cut -d= -f2>
-                               # DEFAULT_WORKSPACE=<dir the agent may use>
-   set -a; . ./.env; set +a    # see the note below
    .venv/bin/python -m agent_adapter
    ```
 
-   The adapter reads its own settings from `.env`, but the agent process only
-   gets variables that exist in the adapter's process environment, so a
-   variable that is only in `.env` (an API key, or something named in
-   `ENV_PASSTHROUGH`) never reaches it. That is what the `set -a; . ./.env;
-   set +a` line before the run is for; `export` the variables yourself
-   instead if you prefer. The shell strips double quotes, so write a JSON
-   list setting single-quoted in `.env`: `ENV_PASSTHROUGH='["MY_VAR"]'`.
+   The adapter loads `.env` itself, and the agent process receives the
+   `.env` values it is allowed to see (an API key, or names listed in
+   `ENV_PASSTHROUGH`) exactly as if they were exported. Real environment
+   variables win over `.env`. A JSON list setting is written plainly:
+   `ENV_PASSTHROUGH=["MY_VAR"]`.
 
-3. Verify the fleet (from the repo root, in a second terminal — the adapter
-   from step 2 keeps running in the first):
+3. Verify the fleet (in a second terminal; the adapter keeps running in the
+   first). The manager container already holds the token, so nothing needs
+   exporting:
 
    ```bash
-   set -a; . ./.env; set +a    # exports ADMIN_TOKEN from the root .env
-   curl -s -H "Authorization: Bearer $ADMIN_TOKEN" http://127.0.0.1:8000/agents
+   docker compose exec manager python -c "import os,urllib.request as u;print(u.urlopen(u.Request('http://127.0.0.1:8000/agents',headers={'Authorization':'Bearer '+os.environ['ADMIN_TOKEN']})).read().decode())"
    ```
 
    `omp-local` (the default `<runtime>-local` id) should list as online. Add the Discord frontend
@@ -94,13 +93,13 @@ sees, and migrating from the old `omp-adapter`:
 
 ## Configuration
 
-One root `.env` (compose auto-loads it, but only when containers are
+One root `.env` that compose loads by itself, but only when containers are
 created or recreated: after editing it, run `docker compose up -d` again
-with your `--profile` flags). Template with comments: `.env.example`.
+with your `--profile` flags. Sample with comments: `.env.example`.
 
 | Key | Used by | Required | Default / notes |
 |---|---|---|---|
-| `ADMIN_TOKEN` | manager; discord (passed as `HUB_TOKEN`) | yes | Ships blank; compose refuses to start until set (`openssl rand -hex 32`). Full admin over the hub. |
+| `ADMIN_TOKEN` | manager; discord (passed as `HUB_TOKEN`) | yes | Any long random string (`openssl rand -hex 32`); compose refuses to start while it is blank. Full admin over the hub. |
 | `SQLITE_PATH` | manager | no | `/data/manager.db` (inside the container, on the `manager-data` volume). |
 | `DOMAIN` | caddy profile | no | `localhost`. A DNS name gets Let's Encrypt; a bare IP or `localhost` gets Caddy's internal CA. |
 | `DISCORD_BOT_TOKEN` | discord profile | yes, for that profile | Blank; the bot exits at startup without it. |

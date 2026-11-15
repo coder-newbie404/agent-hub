@@ -1,36 +1,25 @@
 # Deploying agent-hub
 
-All shapes start from one root `.env`. Required everywhere: `ADMIN_TOKEN`.
-`.env.example` ships it blank and compose refuses to start until it is
-set, so no deployment ever runs on a publicly known default token.
-The manager is always published on
+All shapes read one root `.env`, which compose loads by itself: no flag, no
+`export`, no sourcing. Required everywhere: `ADMIN_TOKEN`, any long random
+string. Compose refuses to start while it is unset, so no deployment ever
+runs on a publicly known default token. The manager is always published on
 `127.0.0.1:8000` (same-host adapters and debugging); the `caddy` profile
 adds the public TLS endpoint.
 
-## Before any shape: create `.env` once
+## Before any shape: have a `.env`
 
-Run this once, from the repo root, before any section below:
+If you already have an env file, save it as `.env` in the repo root and it
+is used as-is; extra keys are ignored. `.env.example` is only a sample of
+every key, nothing requires copying it. Starting from nothing, the one
+required line is enough:
 
 ```bash
-cp .env.example .env && sed -i.bak "s|^ADMIN_TOKEN=.*|ADMIN_TOKEN=$(openssl rand -hex 32)|" .env && rm .env.bak
+echo "ADMIN_TOKEN=$(openssl rand -hex 32)" >> .env
 ```
 
-It copies the template and writes a fresh random `ADMIN_TOKEN` (the
-`-i.bak` form works on both GNU and BSD sed). Run it only once: re-running
-`cp` overwrites the `.env` you have since edited (`DOMAIN`, Discord vars).
 Anyone holding the token has full admin over the hub, so keep `.env`
-private. Read it back with:
-
-```bash
-grep '^ADMIN_TOKEN=' .env
-```
-
-To rotate the token later without touching your other settings, regenerate
-it in place (no `cp`):
-
-```bash
-sed -i.bak "s|^ADMIN_TOKEN=.*|ADMIN_TOKEN=$(openssl rand -hex 32)|" .env && rm .env.bak
-```
+private. To rotate it, edit the `ADMIN_TOKEN` line in place.
 
 Changing `ADMIN_TOKEN` invalidates the bootstrap token used by the Discord
 bot and any adapter or agent configured with it as its `AGENT_TOKEN`.
@@ -42,7 +31,7 @@ and the Discord bot are recreated with the new value. Then update the
 `AGENT_TOKEN` of any adapter or agent that used the old admin token and
 restart it.
 
-Sections 1-4 below edit or append lines in your `.env`.
+Sections 1-4 below set or add lines in your `.env`.
 
 ## 1. Localhost (development)
 
@@ -50,8 +39,7 @@ Sections 1-4 below edit or append lines in your `.env`.
 docker compose up -d
 ```
 
-Your `.env` already carries `ADMIN_TOKEN` from the step above; compose
-refuses to start without it.
+Your `.env` carries `ADMIN_TOKEN`; compose refuses to start without it.
 
 Adapter on the same machine: `MANAGER_URL=ws://127.0.0.1:8000/ws/agent`.
 No TLS, nothing leaves the machine.
@@ -139,7 +127,7 @@ docker compose --profile discord up -d
 
 `ADMIN_TOKEN` is shared: `compose.yml` passes it to the bot as `HUB_TOKEN`
 (the only hub-token variable the bot reads), so you set nothing extra; it
-is the one you generated in "create `.env` once".
+is the one in your `.env`.
 Verify with `/agent status` in Discord.
 
 ## 5. Adapter instances
@@ -244,10 +232,9 @@ DB; the adapter's journal lives on its own machine).
 ## Troubleshooting
 
 - **`docker compose` fails with "set ADMIN_TOKEN in .env"**: `ADMIN_TOKEN`
-  is blank or `.env` is missing. Generate one into `.env` with the `sed`
-  command in "create `.env` once" (`openssl rand -hex 32`). Compose
-  evaluates this at parse time, so every compose command (even `logs` or
-  `config`) fails until it is set.
+  is blank or `.env` is missing. Add the line (see "Before any shape").
+  Compose evaluates this at parse time, so every compose command (even
+  `logs` or `config`) fails until it is set.
 - **Adapter fails with a TLS error (`CERTIFICATE_VERIFY_FAILED`) against a
   bare-IP hub**: Caddy serves a certificate from its internal CA, which the
   adapter machine does not trust. Install the root CA there, see "3. VPS,

@@ -1,7 +1,8 @@
 """Adapter settings.
 
 Split by secret-ness:
-- env (`.env` / process env): important + secret values — RUNTIME,
+- env (process env, plus a `.env` in the working directory that the entrypoint
+  loads into it without overriding): important + secret values — RUNTIME,
   MANAGER_URL, AGENT_TOKEN, DEFAULT_WORKSPACE, ALLOWED_ROOT.
 - config file (config/adapter.config.toml, component-only): daemon tuning
   that is safe to commit. ADAPTER_CONFIG points at it; env wins over the
@@ -88,10 +89,10 @@ class Settings(BaseSettings):
         if config_file and os.path.exists(os.path.expanduser(config_file)):
             sources.append(
                 TomlConfigSettingsSource(settings_cls, toml_file=config_file))
-        sources += [dotenv_settings, file_secret_settings]
+        sources += [file_secret_settings]
         return tuple(sources)
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(extra="ignore")
 
 
 def legacy_path_error(settings) -> str | None:

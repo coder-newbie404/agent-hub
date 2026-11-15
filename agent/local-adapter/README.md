@@ -37,15 +37,18 @@ Variables are split by secret-ness:
   `.env` file in this directory; env names matched case-insensitively):
   important + secret values and everything that differs per instance.
 - **config file** (`config/adapter.config.toml`, committed): component
-  tuning only. `ADAPTER_CONFIG` overrides the path; it is read from the
-  **process environment only** (shell export, systemd `Environment=` or
-  `EnvironmentFile`), never from a `.env` file, so putting it in `.env` has
-  no effect.
+  tuning only. `ADAPTER_CONFIG` overrides the path.
+
+At startup the adapter loads `.env` from its working directory into its own
+process environment, never overriding a variable that is already set. So a
+`.env` file behaves exactly like exported variables: nothing has to be
+sourced or exported first, and its values reach the agent process too (see
+"Environment the agent sees").
 
 Precedence, highest first: real process environment (shell exports, systemd
-`EnvironmentFile`), then the config file, then the `.env` file, then the code
-defaults. A key set in the config file beats the same key in `.env`, which is
-why the committed file sets only pure tuning keys and nothing per-instance.
+`EnvironmentFile`), then the `.env` file, then the config file, then the code
+defaults. The committed config file sets only pure tuning keys and nothing
+per-instance.
 
 | Setting (env name) | Required | Meaning |
 |---|---|---|
@@ -76,7 +79,7 @@ reconnect, sync cadence, stream size limit, `delegation_enabled`, and
 cd agent/local-adapter
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-cp .env.example .env     # set MANAGER_URL, AGENT_TOKEN, DEFAULT_WORKSPACE, RUNTIME
+# put MANAGER_URL, AGENT_TOKEN, DEFAULT_WORKSPACE, RUNTIME in .env (sample: .env.example)
 .venv/bin/python -m agent_adapter
 ```
 
@@ -198,13 +201,11 @@ an adapter setting (`MANAGER_URL`, `POLICY`, `MODEL`, ...). If a runtime needs
 another variable (for example `GOOGLE_CLOUD_PROJECT`), add it:
 `ENV_PASSTHROUGH=["GOOGLE_CLOUD_PROJECT"]`.
 
-`ENV_PASSTHROUGH` and the `*_API_KEY`-style credential patterns only forward
-variables that exist in the adapter **process** environment: a shell `export`,
-or a systemd `EnvironmentFile`. A variable that appears only in a `.env` file
-is read by the adapter for its own settings but never reaches the agent
-process. When running by hand with a `.env`, export it first (`export
-FOO_API_KEY=...`, or `set -a; . ./.env; set +a`; the shell strips double
-quotes, so single-quote a JSON list there: `ENV_PASSTHROUGH='["MY_VAR"]'`).
+`ENV_PASSTHROUGH` and the `*_API_KEY`-style credential patterns forward
+variables from the adapter's environment, which includes everything in its
+`.env` file: a key that exists only in `.env` reaches the agent process, no
+`export` or sourcing needed. A JSON list is written plainly in `.env`:
+`ENV_PASSTHROUGH=["MY_VAR"]`.
 
 ## Security notes
 
@@ -289,8 +290,8 @@ per runtime. To keep your `omp` setup:
    start fresh instead, delete or rename `~/.omp-adapter`.
 4. The agent process no longer inherits the adapter's whole environment. If
    it relied on a variable that is not a `*_API_KEY`, add it to
-   `ENV_PASSTHROUGH` (and export it in the adapter's own environment, see
-   "Environment the agent sees").
+   `ENV_PASSTHROUGH` (a `.env` value works, see "Environment the agent
+   sees").
 5. Install the template unit and enable the instance:
    `cp systemd/agent-adapter@.service ~/.config/systemd/user/ && systemctl
    --user daemon-reload && systemctl --user enable --now agent-adapter@omp`.

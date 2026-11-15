@@ -16,7 +16,7 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     environment:
-      ADMIN_TOKEN: ${ADMIN_TOKEN:?set ADMIN_TOKEN in .env (cp .env.example .env)}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?set ADMIN_TOKEN in .env}
       SQLITE_PATH: ${SQLITE_PATH:-/data/manager.db}
     volumes:
       - manager-data:/data

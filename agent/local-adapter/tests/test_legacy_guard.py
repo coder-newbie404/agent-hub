@@ -15,7 +15,7 @@ def home(tmp_path, monkeypatch):
 
 def _settings(runtime="omp", **kw) -> Settings:
     return Settings(manager_url="wss://x", agent_token="t",
-                    default_workspace="/tmp", runtime=runtime, _env_file=None,
+                    default_workspace="/tmp", runtime=runtime,
                     **kw)
 
 
