@@ -25,18 +25,16 @@ docs assume `.venv/bin` paths. The quickstart uses `omp` on `PATH`; set
 `RUNTIME_BIN` (in the adapter's `.env`) to an absolute path if the binary
 is elsewhere.
 
-1. Start the hub. Put `ADMIN_TOKEN=<any long random string>` in `.env` (an
-   existing env file works as-is; `.env.example` is only a sample), then:
+1. Start the hub. Create `.env` in the repo root with at least
+   `ADMIN_TOKEN` (any long random string; `.env.example` lists the keys),
+   then:
 
    ```bash
    docker compose up -d        # manager on 127.0.0.1:8000
    until curl -sf http://127.0.0.1:8000/health; do sleep 1; done
    ```
 
-   No `.env` yet? `echo "ADMIN_TOKEN=$(openssl rand -hex 32)" >> .env`.
-   Compose loads `.env` by itself and refuses to start while `ADMIN_TOKEN`
-   is blank, so a deployment never runs on a publicly known default token.
-   Anyone holding the token has full admin over the hub.
+   `ADMIN_TOKEN` is full admin over the hub: keep it secret.
 
 2. Run an adapter on this machine. Put its settings in
    `agent/local-adapter/.env` (sample: `.env.example` there; `RUNTIME` is
@@ -93,9 +91,9 @@ sees, and migrating from the old `omp-adapter`:
 
 ## Configuration
 
-Every component reads a plain env file that it loads by itself. Nothing is
-exported, sourced, or passed on a command line, and an existing env file
-works as-is (extra keys are ignored). `.env.example` files are samples only.
+Every component reads a plain env file that it loads by itself: nothing is
+exported, sourced, or passed on a command line. `.env.example` files are
+samples only.
 
 | Component | Env file | Loaded by |
 |---|---|---|
@@ -110,7 +108,7 @@ Hub and Discord (root `.env`):
 
 | Key | Used by | Required | Default / notes |
 |---|---|---|---|
-| `ADMIN_TOKEN` | manager; discord (passed as `HUB_TOKEN`) | yes | Any long random string (`openssl rand -hex 32`); compose refuses to start while it is blank. Full admin over the hub. |
+| `ADMIN_TOKEN` | manager; discord (passed as `HUB_TOKEN`) | yes | Any long random string. Compose refuses to start without it. Full admin over the hub. |
 | `SQLITE_PATH` | manager | no | `/data/manager.db` (inside the container, on the `manager-data` volume). |
 | `DOMAIN` | caddy profile | no | `localhost`. A DNS name gets Let's Encrypt; a bare IP or `localhost` gets Caddy's internal CA. |
 | `DISCORD_BOT_TOKEN` | discord profile | yes, for that profile | Blank; the bot exits at startup without it. |

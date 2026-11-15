@@ -1,25 +1,16 @@
 # Deploying agent-hub
 
-All shapes read one root `.env`, which compose loads by itself: no flag, no
-`export`, no sourcing. Required everywhere: `ADMIN_TOKEN`, any long random
-string. Compose refuses to start while it is unset, so no deployment ever
-runs on a publicly known default token. The manager is always published on
+All shapes read one root `.env`, which compose loads by itself. Required
+everywhere: `ADMIN_TOKEN`, any long random string; compose refuses to start
+without it. The manager is always published on
 `127.0.0.1:8000` (same-host adapters and debugging); the `caddy` profile
 adds the public TLS endpoint.
 
-## Before any shape: have a `.env`
+## Before any shape: create `.env`
 
-If you already have an env file, save it as `.env` in the repo root and it
-is used as-is; extra keys are ignored. `.env.example` is only a sample of
-every key, nothing requires copying it. Starting from nothing, the one
-required line is enough:
-
-```bash
-echo "ADMIN_TOKEN=$(openssl rand -hex 32)" >> .env
-```
-
-Anyone holding the token has full admin over the hub, so keep `.env`
-private. To rotate it, edit the `ADMIN_TOKEN` line in place.
+Create `.env` in the repo root with at least `ADMIN_TOKEN` (`.env.example`
+lists every key). It is full admin over the hub, so keep it private. To
+rotate it, edit the line in place.
 
 Changing `ADMIN_TOKEN` invalidates the bootstrap token used by the Discord
 bot and any adapter or agent configured with it as its `AGENT_TOKEN`.
