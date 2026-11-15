@@ -93,9 +93,20 @@ sees, and migrating from the old `omp-adapter`:
 
 ## Configuration
 
-One root `.env` that compose loads by itself, but only when containers are
-created or recreated: after editing it, run `docker compose up -d` again
-with your `--profile` flags. Sample with comments: `.env.example`.
+Every component reads a plain env file that it loads by itself. Nothing is
+exported, sourced, or passed on a command line, and an existing env file
+works as-is (extra keys are ignored). `.env.example` files are samples only.
+
+| Component | Env file | Loaded by |
+|---|---|---|
+| hub (`manager`, `caddy`) and Discord bot | root `.env` | compose, automatically; re-run `docker compose up -d` (with your `--profile` flags) after editing, it is read only when containers are created |
+| local adapter | `agent/local-adapter/.env`, or `~/.config/agent-adapter/<instance>.env` under systemd | the adapter itself (`.env`), or systemd `EnvironmentFile` |
+
+Real environment variables win over the file. Both services also accept
+their own committed tuning file (`hub/manager/config/manager.config.toml`,
+mounted read-only at `/srv/config`; `agent/local-adapter/config/adapter.config.toml`).
+
+Hub and Discord (root `.env`):
 
 | Key | Used by | Required | Default / notes |
 |---|---|---|---|
@@ -108,11 +119,15 @@ with your `--profile` flags. Sample with comments: `.env.example`.
 | `DISCORD_SYNC_CHANNEL_ID` | discord profile | no | Blank; home channel for threads the sync engine creates. |
 | `HUB_URL` | discord profile | no | `http://manager:8000` (in-network alias; commented out in `.env.example`). |
 
-The adapter keeps its own env file on the machine where it runs
-(`agent/local-adapter/.env.example`) because it is a systemd service,
-not a compose stack. The manager also reads
-`hub/manager/config/manager.config.toml`, which compose mounts read-only
-at `/srv/config`.
+Adapter (its own env file; all keys and defaults: `agent/local-adapter/README.md`):
+
+| Key | Required | Notes |
+|---|---|---|
+| `RUNTIME` | yes | `omp`, `claude` or `opencode`. |
+| `MANAGER_URL` | yes | e.g. `ws://127.0.0.1:8000/ws/agent`, or `wss://<your-host>/ws/agent`. |
+| `AGENT_TOKEN` | yes | Per-agent token minted by the hub (`POST /tokens`, or Discord `/agent token new`); the quickstart reuses `ADMIN_TOKEN`. |
+| `DEFAULT_WORKSPACE` | yes | Directory the agent works in when a session names none. |
+| `RUNTIME_BIN`, `MODEL`, `POLICY`, `ALLOWED_ROOT`, `ENV_PASSTHROUGH` | no | See the adapter README. API keys the runtime needs (`*_API_KEY`, ...) go in the same file and reach the agent process directly. |
 
 ## Deploying
 
